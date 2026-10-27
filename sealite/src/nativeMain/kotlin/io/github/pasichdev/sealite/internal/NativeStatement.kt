@@ -38,9 +38,11 @@ import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_bind_double
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_bind_int64
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_bind_null
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_bind_text16
+import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_bind_zeroblob
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_clear_bindings
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_column_blob
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_column_bytes
+import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_column_bytes16
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_column_count
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_column_double
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_column_int64
@@ -52,175 +54,180 @@ import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_finalize
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_reset
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_step
 import io.github.pasichdev.sealite.cinterop.sealite_sqlite3_stmt_busy
-import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.locks.withLock
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.UShortVar
+import kotlinx.cinterop.get
 import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toCValues
 import kotlinx.cinterop.toKStringFromUtf16
 import kotlinx.cinterop.utf16
 
+/**
+ * A prepared statement of a [NativeRawDb]. Every call runs under the connection's lock (see
+ * [NativeRawDb]), and the connection finalizes the statements still open when it closes.
+ *
+ * `getText` on a SQL NULL returns the empty string on every platform, like the bundled driver of
+ * androidx.sqlite on the JVM; use `isNull` to tell NULL from `""`. A lone UTF-16 surrogate in
+ * `bindText` is stored as U+FFFD.
+ *
+ * [close] waits for the connection's lock: closing a statement while another thread is inside a call
+ * on the same connection (a long `step`, say) blocks until that call returns. Only closing the
+ * connection interrupts a running query.
+ */
 internal class NativeStatement(
+    private val owner: NativeRawDb,
     private val dbPointer: CPointer<sqlite3>,
     private val stmtPointer: CPointer<sqlite3_stmt>,
 ) : SQLiteStatement {
-    private val closed = atomic(false)
+    // Guarded by owner.lock.
+    private var closed = false
 
-    override fun bindBlob(index: Int, value: ByteArray) {
-        throwIfClosed()
+    override fun bindBlob(index: Int, value: ByteArray) = locked {
         val resultCode =
-            sealite_sqlite3_bind_blob(stmtPointer, index, value.toCValues(), value.size, SQLITE_TRANSIENT)
+            if (value.isEmpty()) {
+                // An empty BLOB, not NULL, whatever pointer an empty array would give.
+                sealite_sqlite3_bind_zeroblob(stmtPointer, index, 0)
+            } else {
+                sealite_sqlite3_bind_blob(stmtPointer, index, value.toCValues(), value.size, SQLITE_TRANSIENT)
+            }
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun bindLong(index: Int, value: Long) {
-        throwIfClosed()
+    override fun bindLong(index: Int, value: Long) = locked {
         val resultCode = sealite_sqlite3_bind_int64(stmtPointer, index, value)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun bindDouble(index: Int, value: Double) {
-        throwIfClosed()
+    override fun bindDouble(index: Int, value: Double) = locked {
         val resultCode = sealite_sqlite3_bind_double(stmtPointer, index, value)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun bindText(index: Int, value: String) {
-        throwIfClosed()
-        // The third parameter to sqlite3_bind_text16() should be a pointer to well-formed
-        // UTF16 text. If a non-negative fourth parameter is provided to sqlite3_bind_text16() then
-        // that parameter must be the byte offset where the NUL terminator would occur. Hence due to
-        // value.utf16 returning a C string that is zero-terminated, we use 'valueUtf16.size - 1' as
-        // the fourth parameter.
-        val valueUtf16 = value.utf16
+    override fun bindText(index: Int, value: String) = locked {
+        // SQLite would read a lone surrogate as the start of a pair and swallow the next unit.
+        val text = value.replacingLoneSurrogates()
+        // The byte length is passed explicitly (2 per unit), so embedded U+0000 is kept.
         val resultCode =
-            sealite_sqlite3_bind_text16(
-                stmtPointer,
-                index,
-                valueUtf16,
-                valueUtf16.size - 1,
-                SQLITE_TRANSIENT,
-            )
+            sealite_sqlite3_bind_text16(stmtPointer, index, text.utf16, text.length * 2, SQLITE_TRANSIENT)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun bindNull(index: Int) {
-        throwIfClosed()
+    override fun bindNull(index: Int) = locked {
         val resultCode = sealite_sqlite3_bind_null(stmtPointer, index)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun getText(index: Int): String {
-        throwIfClosed()
+    override fun getText(index: Int): String = locked {
         throwIfNoRow()
         throwIfInvalidColumn(index)
-        // Kotlin/Native uses UTF-16 character encoding by default and strings returned by
-        // sqlite3_column_text16(), even empty strings, are always zero-terminated. Thus we use
-        // toKStringFromUtf16() that returns a kotlin.String from a zero-terminated C string.
+        // Exactly sqlite3_column_bytes16() / 2 units, read after sqlite3_column_text16() as SQLite
+        // requires: a NUL scan (toKStringFromUtf16) would cut a value with an embedded U+0000 short.
         val value = sealite_sqlite3_column_text16(stmtPointer, index)
-        if (value == null) throwIfOutOfMemory()
-        return value!!.reinterpret<UShortVar>().toKStringFromUtf16()
+        if (value == null) {
+            throwIfOutOfMemory()
+            return@locked "" // SQL NULL, like the bundled driver on the JVM
+        }
+        val units = sealite_sqlite3_column_bytes16(stmtPointer, index) / 2
+        val text = value.reinterpret<UShortVar>()
+        CharArray(units) { text[it].toInt().toChar() }.concatToString()
     }
 
-    override fun getLong(index: Int): Long {
-        throwIfClosed()
+    override fun getLong(index: Int): Long = locked {
         throwIfNoRow()
         throwIfInvalidColumn(index)
-        return sealite_sqlite3_column_int64(stmtPointer, index)
+        sealite_sqlite3_column_int64(stmtPointer, index)
     }
 
-    override fun getBlob(index: Int): ByteArray {
-        throwIfClosed()
+    override fun getBlob(index: Int): ByteArray = locked {
         throwIfNoRow()
         throwIfInvalidColumn(index)
         val blob = sealite_sqlite3_column_blob(stmtPointer, index)
         if (blob == null) throwIfOutOfMemory()
         val size = sealite_sqlite3_column_bytes(stmtPointer, index)
         if (size == 0) throwIfOutOfMemory()
-        return if (blob != null && size > 0) {
+        if (blob != null && size > 0) {
             blob.readBytes(size)
         } else {
             ByteArray(0)
         }
     }
 
-    override fun getDouble(index: Int): Double {
-        throwIfClosed()
+    override fun getDouble(index: Int): Double = locked {
         throwIfNoRow()
         throwIfInvalidColumn(index)
-        return sealite_sqlite3_column_double(stmtPointer, index)
+        sealite_sqlite3_column_double(stmtPointer, index)
     }
 
-    override fun isNull(index: Int): Boolean {
-        throwIfClosed()
-        return getColumnType(index) == SQLITE_NULL
-    }
+    override fun isNull(index: Int): Boolean = locked { columnType(index) == SQLITE_NULL }
 
-    override fun getColumnType(index: Int): Int {
-        throwIfClosed()
-        throwIfNoRow()
-        throwIfInvalidColumn(index)
-        return sealite_sqlite3_column_type(stmtPointer, index)
-    }
+    override fun getColumnType(index: Int): Int = locked { columnType(index) }
 
-    override fun getColumnCount(): Int {
-        throwIfClosed()
-        return sealite_sqlite3_column_count(stmtPointer)
-    }
+    override fun getColumnCount(): Int = locked { sealite_sqlite3_column_count(stmtPointer) }
 
-    override fun getColumnName(index: Int): String {
-        throwIfClosed()
+    override fun getColumnName(index: Int): String = locked {
         throwIfInvalidColumn(index)
         val namePointer = sealite_sqlite3_column_name16(stmtPointer, index) ?: throw OutOfMemoryError()
-        return namePointer.reinterpret<UShortVar>().toKStringFromUtf16()
+        namePointer.reinterpret<UShortVar>().toKStringFromUtf16()
     }
 
-    override fun step(): Boolean {
-        throwIfClosed()
+    override fun step(): Boolean = locked {
         val resultCode = sealite_sqlite3_step(stmtPointer)
-        return when (resultCode) {
+        when (resultCode) {
             SQLITE_ROW -> true
             SQLITE_DONE -> false
             else -> throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun reset() {
-        throwIfClosed()
+    override fun reset() = locked {
         val resultCode = sealite_sqlite3_reset(stmtPointer)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun clearBindings() {
-        throwIfClosed()
+    override fun clearBindings() = locked {
         val resultCode = sealite_sqlite3_clear_bindings(stmtPointer)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())
         }
     }
 
-    override fun close() {
-        // Compare-and-set: of any number of racing or repeated calls only one releases the handle.
-        if (closed.compareAndSet(false, true)) sealite_sqlite3_finalize(stmtPointer)
+    override fun close() = owner.lock.withLock {
+        if (!closed) {
+            owner.forget(this)
+            finalizeLocked()
+        }
     }
 
-    private fun throwIfClosed() {
-        if (closed.value) {
-            throwSQLiteException(SQLITE_MISUSE, "statement is closed")
-        }
+    /** Finalizes a statement that is still open. Must hold the connection's lock. */
+    internal fun finalizeLocked() {
+        closed = true
+        sealite_sqlite3_finalize(stmtPointer)
+    }
+
+    private inline fun <T> locked(block: () -> T): T = owner.lock.withLock {
+        owner.throwIfClosed()
+        if (closed) throwSQLiteException(SQLITE_MISUSE, "statement is closed")
+        block()
+    }
+
+    private fun columnType(index: Int): Int {
+        throwIfNoRow()
+        throwIfInvalidColumn(index)
+        return sealite_sqlite3_column_type(stmtPointer, index)
     }
 
     private fun throwIfNoRow() {
@@ -230,7 +237,7 @@ internal class NativeStatement(
     }
 
     private fun throwIfInvalidColumn(index: Int) {
-        if (index < 0 || index >= getColumnCount()) {
+        if (index < 0 || index >= sealite_sqlite3_column_count(stmtPointer)) {
             throwSQLiteException(SQLITE_RANGE, "column index out of range")
         }
     }
@@ -241,4 +248,23 @@ internal class NativeStatement(
             throw OutOfMemoryError()
         }
     }
+}
+
+/** [this] with every unpaired UTF-16 surrogate replaced by U+FFFD; the same instance if there is none. */
+private fun String.replacingLoneSurrogates(): String {
+    var fixed: CharArray? = null
+    var i = 0
+    while (i < length) {
+        val c = this[i]
+        if (c.isHighSurrogate() && i + 1 < length && this[i + 1].isLowSurrogate()) {
+            i += 2
+            continue
+        }
+        if (c.isSurrogate()) {
+            val chars = fixed ?: toCharArray().also { fixed = it }
+            chars[i] = '\uFFFD'
+        }
+        i++
+    }
+    return fixed?.concatToString() ?: this
 }
