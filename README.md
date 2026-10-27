@@ -114,14 +114,14 @@ SealiteDriver(SealiteKey.raw(key)).use { driver ->
 
 Shut down in this order: close the `RoomDatabase`, then the `SealiteDriver` (which wipes its key).
 
-> [!WARNING]
-> **Never enable Room's `allowDataLossOnRecovery(true)` together with Sealite.** A wrong key makes
-> SQLite report `SQLITE_NOTADB`, which looks exactly like a corrupt file. With that option Room
-> treats it as corruption, **deletes the database and creates an empty one**. A mistyped or lost
-> key would destroy the user's data. Sealite throws a `SQLiteException` that `Sealite.errorOf` maps to
-> `SealiteError.WRONG_KEY` instead; leave Room's default behaviour (throw) in place and handle the
-> error yourself. An encrypted database is indistinguishable from random bytes, so a damaged file
-> reports `WRONG_KEY` too: never answer it by deleting the database.
+> [!NOTE]
+> **A wrong key never makes Room delete your database.** Room's corruption recovery
+> (`allowDataLossOnRecovery(true)` in Room 3) deletes a database only when opening fails with
+> `androidx.sqlite.SQLiteException`. Sealite reports a wrong key, a plaintext file and its other
+> refusals as `SealiteException`, which is not a `SQLiteException`, so Room rethrows it instead of
+> recovering by deletion. A test covers this for Room 2.8 and Room 3. An encrypted database is
+> indistinguishable from random bytes, so a damaged file also reports `WRONG_KEY`: never answer it
+> by deleting the database yourself.
 
 ## Key management
 
@@ -176,20 +176,21 @@ Sealite always turns on SQLCipher's memory sanitization (`cipher_memory_security
 that held decrypted pages or keys is overwritten. There is no switch; the setting is library-wide in
 SQLCipher and can not be turned off again once it is on.
 
-### Errors: `SealiteError` and `Sealite.errorOf`
+### Errors: `SealiteException`, `SealiteError` and `Sealite.errorOf`
 
-Failures reach callers as `androidx.sqlite.SQLiteException`, and Room wraps and rethrows them. Do
-not parse messages: hand the exception, or anything that has it as a cause, to `Sealite.errorOf`.
+When Sealite refuses a database it throws `SealiteException`, whose `error` is a `SealiteError`.
+Room may wrap it; `Sealite.errorOf(e)` finds it in the cause chain, by type (never by message
+text). Ordinary SQLite failures (I/O, constraints, a damaged page under the right key, a closed
+connection) stay `androidx.sqlite.SQLiteException`, as with any driver.
 
 ```kotlin
 try {
     openDatabase()
-} catch (e: Exception) {
-    when (Sealite.errorOf(e)) {
+} catch (e: SealiteException) {           // or catch (e: Exception) + Sealite.errorOf(e)
+    when (e.error) {
         SealiteError.WRONG_KEY -> askForTheKeyAgain()
         SealiteError.NOT_ENCRYPTED -> offerMigration()
-        null -> throw e                  // not one of Sealite's: an I/O error, a constraint, ...
-        else -> reportBug(e)             // NOT_KEYED, PROVIDER_MISSING, REKEY_*
+        else -> reportBug(e)               // NOT_KEYED, PROVIDER_MISSING, REKEY_*
     }
 }
 ```
@@ -204,6 +205,21 @@ try {
 | `REKEY_UNVERIFIED` | `Sealite.rekey` committed the new key but could not verify it: keep both keys |
 
 New values may be added in minor releases: keep an `else` branch when matching.
+
+### Threading
+
+A connection and its statements share one lock. Calls from different threads are serialized, so a
+connection is safe to use from several threads, but they do not run in parallel (Room already gives
+each connection to one coroutine at a time). `close()` on a connection interrupts a running query
+(`sqlite3_interrupt`), waits for the call in progress, finalizes the statements still open and then
+closes the handle; after that, every call on the connection or one of its statements throws
+`SQLiteException` (`SQLITE_MISUSE`, "connection is closed") instead of touching freed memory.
+Closing a statement is idempotent and waits for the connection's lock; it does not interrupt.
+
+Text and blobs behave the same on every platform: `getText` on SQL `NULL` returns `""` (use
+`isNull`), text with embedded `U+0000` round-trips intact, an unpaired UTF-16 surrogate bound with
+`bindText` is stored as `U+FFFD`, and an empty `ByteArray` is stored as an empty BLOB (not `NULL`).
+SQL that compiles to nothing (empty, whitespace or comments only) is rejected with `SQLITE_MISUSE`.
 
 ### Maintenance: `Sealite`
 
@@ -337,7 +353,7 @@ Room's pool. Use a raw key.
 **Can I use it next to `sqlite-bundled`?** Yes; symbols are renamed and libraries are linked with
 hidden visibility.
 
-**What happens if the key is wrong?** `SQLiteException` that `Sealite.errorOf` maps to
+**What happens if the key is wrong?** A `SealiteException` with `error ==`
 `SealiteError.WRONG_KEY`; the file is not modified.
 
 **I need to know which SQLCipher I am running.** `Sealite.versions`.

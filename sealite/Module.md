@@ -35,9 +35,10 @@ can not be wiped. Pick a [io.github.pasichdev.sealite.SealiteKey.Companion.raw] 
 application owns the key; a [io.github.pasichdev.sealite.SealiteKey.Companion.passphrase] key runs
 PBKDF2 (256 000 iterations by default) on every connection open.
 
-Never enable Room's `allowDataLossOnRecovery(true)` together with Sealite: a wrong key looks
-exactly like a corrupt file, and Room would delete the database. A damaged encrypted file reports
-the same error as a wrong key, so a failed open is never a reason to delete the database.
+A wrong key is reported as [io.github.pasichdev.sealite.SealiteException], not as
+`androidx.sqlite.SQLiteException`, so Room's corruption recovery (`allowDataLossOnRecovery`) never
+deletes an encrypted database because of it. A damaged encrypted file reports the same error as a
+wrong key, so a failed open is never a reason to delete the database.
 
 ## Configuration and errors
 
