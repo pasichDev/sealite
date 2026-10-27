@@ -4,7 +4,6 @@
 package io.github.pasichdev.sealite
 
 import androidx.sqlite.SQLiteConnection
-import androidx.sqlite.SQLiteException
 import androidx.sqlite.execSQL
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -73,8 +72,8 @@ class SealiteDriverTest {
         val before = assertNotNull(readFileBytes(path))
 
         SealiteDriver(rawKey(2)).use { driver ->
-            val e = assertFailsWith<SQLiteException> { driver.open(path) }
-            assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e), "message was: ${e.message}")
+            val e = assertFailsWith<SealiteException> { driver.open(path) }
+            assertEquals(SealiteError.WRONG_KEY, e.error, "message was: ${e.message}")
         }
 
         val after = assertNotNull(readFileBytes(path))
@@ -128,7 +127,7 @@ class SealiteDriverTest {
             driver.open(path).use { assertEquals(listOf("p"), it.notes()) }
         }
         SealiteDriver(SealiteKey.passphrase("wrong".toCharArray())).use { driver ->
-            assertFailsWith<SQLiteException> { driver.open(path) }
+            assertFailsWith<SealiteException> { driver.open(path) }
         }
         assertFalse(assertNotNull(readFileBytes(path)).startsWith(SQLITE_HEADER))
     }
@@ -179,8 +178,8 @@ class SealiteDriverTest {
         Sealite.rekey(path, oldKey, newKey)
 
         SealiteDriver(oldKey).use { driver ->
-            val e = assertFailsWith<SQLiteException> { driver.open(path) }
-            assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e))
+            val e = assertFailsWith<SealiteException> { driver.open(path) }
+            assertEquals(SealiteError.WRONG_KEY, e.error)
         }
         SealiteDriver(newKey).use { driver ->
             driver.open(path).use { assertEquals(listOf("kept"), it.notes()) }

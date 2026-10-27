@@ -4,7 +4,6 @@
 package io.github.pasichdev.sealite
 
 import androidx.sqlite.SQLiteConnection
-import androidx.sqlite.SQLiteException
 import io.github.pasichdev.sealite.SealiteConfig.Compatibility
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -139,8 +138,8 @@ class GoldenFixturesTest {
         for (f in fixtures) {
             val path = materialize(f.bytes)
             SealiteDriver(f.wrongKey(), f.config).use { driver ->
-                val e = assertFailsWith<SQLiteException>(f.name) { driver.open(path) }
-                assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e), "${f.name}: ${e.message}")
+                val e = assertFailsWith<SealiteException>(f.name) { driver.open(path) }
+                assertEquals(SealiteError.WRONG_KEY, e.error, "${f.name}: ${e.message}")
             }
             assertContentEquals(f.bytes, readFileBytes(path), "${f.name} was modified by a failed open")
         }
@@ -150,8 +149,8 @@ class GoldenFixturesTest {
     fun aVersion3FileIsRejectedUnderVersion4Defaults() {
         val path = materialize(GOLDEN_CLI_PASS_V3)
         SealiteDriver(passKey()).use { driver ->
-            val e = assertFailsWith<SQLiteException> { driver.open(path) }
-            assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e), e.message)
+            val e = assertFailsWith<SealiteException> { driver.open(path) }
+            assertEquals(SealiteError.WRONG_KEY, e.error, e.message)
         }
     }
 
@@ -162,8 +161,8 @@ class GoldenFixturesTest {
         val hex = ByteArray(32) { it.toByte() }.joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
         val path = materialize(GOLDEN_CLI_RAW_V4)
         SealiteDriver(SealiteKey.passphrase(hex.toCharArray())).use { driver ->
-            val e = assertFailsWith<SQLiteException> { driver.open(path) }
-            assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e), e.message)
+            val e = assertFailsWith<SealiteException> { driver.open(path) }
+            assertEquals(SealiteError.WRONG_KEY, e.error, e.message)
         }
         // Positive control: the raw form of the same key opens it.
         SealiteDriver(rawKey()).use { driver ->

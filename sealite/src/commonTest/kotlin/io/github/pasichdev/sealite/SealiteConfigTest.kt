@@ -129,7 +129,16 @@ class SealiteConfigTest {
     private fun openErrorWith(path: String, key: SealiteKey, config: SealiteConfig): SealiteError? = try {
         withDb(path, key, config) {}
         null
-    } catch (e: androidx.sqlite.SQLiteException) {
-        Sealite.errorOf(e)
+    } catch (e: SealiteException) {
+        e.error
+    }
+
+    @Test
+    fun aConfigIsNeverEqualToSomethingElse() {
+        assertNotEquals<Any?>(SealiteConfig.DEFAULT, "default")
+        assertNotEquals<Any?>(SealiteConfig.DEFAULT, null)
+        assertNotEquals(SealiteConfig.DEFAULT, SealiteConfig { compatibility = Compatibility.SQLCIPHER_3 })
+        assertNotEquals(SealiteConfig.DEFAULT, SealiteConfig { kdfIterations = 1000 })
+        assertNotEquals(SealiteConfig.DEFAULT, SealiteConfig { pageSize = 8192 })
     }
 }

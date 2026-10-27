@@ -9,6 +9,7 @@ import androidx.sqlite.execSQL
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -109,8 +110,8 @@ class RekeyTest {
         val path = newPath()
         create(path, rawKey(1))
         val before = assertNotNull(readFileBytes(path))
-        val e = assertFailsWith<SQLiteException> { Sealite.rekey(path, rawKey(9), rawKey(2)) }
-        assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e))
+        val e = assertFailsWith<SealiteException> { Sealite.rekey(path, rawKey(9), rawKey(2)) }
+        assertEquals(SealiteError.WRONG_KEY, e.error)
         kotlin.test.assertContentEquals(before, readFileBytes(path))
         assertEquals(rows, withDb(path, rawKey(1)) { it.notes() })
     }
@@ -123,7 +124,7 @@ class RekeyTest {
     }
 
     private fun assertBusyAndUnchanged(block: () -> Unit) {
-        val e = assertFailsWith<SQLiteException> { block() }
+        val e = assertFails { block() }
         val error = Sealite.errorOf(e)
         val busy = e.message.orEmpty().contains("Error code: 5") || e.message.orEmpty().contains("Error code: 517")
         assertTrue(
