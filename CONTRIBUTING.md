@@ -57,11 +57,34 @@ needed on Kotlin/Native.
 
 A platform without passing tests is not a supported platform.
 
+### Coverage
+
+The Kotlin library code must stay at **100 % line and branch coverage** of the JVM target.
+[Kover](https://github.com/Kotlin/kotlinx-kover) measures it, and `./gradlew build` (through
+`check`) runs `koverVerify`, which fails below 100 %. The HTML and XML reports are in
+`sealite/build/reports/kover/`.
+
+- The measured run is `:sealite:jvmTest`, which executes the shared `commonTest` suite and the
+  JVM-only tests (the native library loader, the JNI binding). Put new tests in `commonTest` unless
+  the code under test exists on the JVM only.
+- Kotlin/Native and Android code is not measured: Kover reads JVM bytecode and has no Kotlin/Native
+  support. The Apple targets still run the whole `commonTest` suite, and Android runs it on a device.
+- Code no test can reach (an I/O fault between two steps, a condition SQLite never produces, the
+  Windows-only branch on a Unix host) is marked `@ExcludeFromCoverage`, with a comment saying why.
+  Do not add the annotation to make a gate pass; write the test, or explain in the pull request
+  why none can exist.
+- `LoaderEnvironmentTest` needs different environment variables per run, so it is not part of
+  `jvmTest`: the `jvmLoaderEnvTest*` tasks run it (they are part of `check`).
+- The C glue has an opt-in report that is not part of `check`: `./gradlew :sealite:cCoverageReport`
+  (an arm64 Mac) builds the JNI library with clang's coverage instrumentation, runs the JVM tests
+  against it and writes line and branch coverage of `sealite_jni.c` and `sealite_key.c` (not the
+  SQLCipher amalgamation) to `sealite/build/reports/c-coverage/`.
+
 ## Before you open a pull request
 
 ```sh
 ./gradlew spotlessApply     # ktlint for Kotlin and Gradle scripts, clang-format for C
-./gradlew build             # tests, spotlessCheck, detekt, API check, Dokka
+./gradlew build             # tests, 100 % coverage gate, spotlessCheck, detekt, API check, Dokka
 ```
 
 - If the public API changed on purpose, run `./gradlew :sealite:updateKotlinAbi` and commit the new

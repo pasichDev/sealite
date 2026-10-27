@@ -12,4 +12,5 @@ dependencies {
     implementation(libs.dokka.gradle.plugin)
     implementation(libs.spotless.gradle.plugin)
     implementation(libs.detekt.gradle.plugin)
+    implementation(libs.kover.gradle.plugin)
 }

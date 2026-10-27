@@ -9,6 +9,9 @@ plugins {
     id("sealite.packaging")
     id("sealite.publish")
     id("sealite.detekt")
+    id("sealite.coverage")
+    id("sealite.c-coverage")
+    id("sealite.asan")
     alias(libs.plugins.ksp)
 }
 
@@ -78,6 +81,36 @@ dokka {
             remoteLineSuffix.set("#L")
         }
     }
+}
+
+// The cache directory depends on environment variables (XDG_CACHE_HOME, LOCALAPPDATA) a test can
+// not set from inside the JVM. jvmTest runs without them; LoaderEnvironmentTest runs on its own,
+// once per environment, so that every branch of the lookup is measured.
+val loaderEnvironmentVariables = listOf("XDG_CACHE_HOME", "LOCALAPPDATA")
+val loaderEnvironments =
+    mapOf(
+        "Unset" to emptyMap(),
+        "Blank" to mapOf("XDG_CACHE_HOME" to "  ", "LOCALAPPDATA" to "/loader-env/local"),
+        "Set" to mapOf("XDG_CACHE_HOME" to "/loader-env/xdg", "LOCALAPPDATA" to "/loader-env/local"),
+    )
+tasks.named<Test>("jvmTest") {
+    filter.excludeTestsMatching("*LoaderEnvironmentTest")
+    loaderEnvironmentVariables.forEach { environment.remove(it) }
+}
+for ((name, variables) in loaderEnvironments) {
+    val envTest =
+        tasks.register<Test>("jvmLoaderEnvTest$name") {
+            group = "verification"
+            description = "LoaderEnvironmentTest with the cache variables $name."
+            val jvmTest = tasks.named<Test>("jvmTest").get()
+            testClassesDirs = jvmTest.testClassesDirs
+            classpath = jvmTest.classpath
+            useJUnit()
+            filter.includeTestsMatching("*LoaderEnvironmentTest")
+            loaderEnvironmentVariables.forEach { environment.remove(it) }
+            variables.forEach { (key, value) -> environment(key, value) }
+        }
+    tasks.named("check") { dependsOn(envTest) }
 }
 
 // Broken KDoc links or a malformed Module.md fail the build instead of the release.

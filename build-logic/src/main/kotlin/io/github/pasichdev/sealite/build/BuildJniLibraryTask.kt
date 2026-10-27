@@ -64,9 +64,20 @@ abstract class BuildJniLibraryTask
 
         @get:Input abstract val jniIncludeSubdir: Property<String>
 
+        /** Extra flags for the glue sources only (the amalgamation is third-party code). */
+        @get:Input abstract val glueFlags: ListProperty<String>
+
+        /** Optimisation level of the glue. */
+        @get:Input abstract val glueOptimization: Property<String>
+
         @get:Internal abstract val workDir: DirectoryProperty
 
         @get:OutputDirectory abstract val outputDir: DirectoryProperty
+
+        init {
+            glueOptimization.convention("-O2")
+            glueFlags.convention(emptyList())
+        }
 
         @TaskAction
         fun run() {
@@ -126,10 +137,12 @@ abstract class BuildJniLibraryTask
                     commandLine(
                         common + amalgamationFlags.get() +
                             listOf(
-                                "-O2",
+                                glueOptimization.get(),
                                 "-Wall",
                                 "-Wextra",
                                 "-Wno-unused-parameter",
+                            ) + glueFlags.get() +
+                            listOf(
                                 "-c",
                                 source.absolutePath,
                                 "-o",
