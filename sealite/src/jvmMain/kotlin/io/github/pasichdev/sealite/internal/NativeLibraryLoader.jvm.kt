@@ -42,10 +42,10 @@ internal actual object NativeLibraryLoader {
     private var loaded = false
 
     private val osName: String
-        get() = System.getProperty("os.name")?.lowercase(Locale.US) ?: error("Cannot read os.name")
+        get() = (System.getProperty("os.name") ?: error("Cannot read os.name")).lowercase(Locale.US)
 
     private val osArch: String
-        get() = System.getProperty("os.arch")?.lowercase(Locale.US) ?: error("Cannot read os.arch")
+        get() = (System.getProperty("os.arch") ?: error("Cannot read os.arch")).lowercase(Locale.US)
 
     private val osPrefix: String
         get() =
@@ -151,9 +151,16 @@ internal actual object NativeLibraryLoader {
         // Verify again what is on disk now, right before it is loaded, and hand back the canonical
         // path that was hashed: the caller loads exactly this file.
         val canonical = target.canonicalFile
+        requireUnchanged(canonical, dir, libName, expected)
+        return canonical
+    }
+
+    // Unreachable in a test: the file was moved into place and hashed a moment ago, so only a race
+    // with another process can make either check fail.
+    @ExcludeFromCoverage
+    private fun requireUnchanged(canonical: File, dir: File, libName: String, expected: String) {
         check(canonical.parentFile == dir.canonicalFile) { "$libName resolves outside $dir" }
         check(sha256(canonical) == expected) { "Cached $libName changed after extraction" }
-        return canonical
     }
 
     private val isPosix: Boolean
@@ -164,45 +171,61 @@ internal actual object NativeLibraryLoader {
      * real directory, not owned by the current user, or readable / writable by anyone else (POSIX).
      * Where a directory is ours but too open it is tightened first; ownership can not be repaired.
      */
-    private fun privateCacheDir(): File? {
+    private fun privateCacheDir(): File? = guardedByFileErrors { trustedCacheDir() }
+
+    // The handlers are unreachable in a test: every call in the block either answers "no" (null) or
+    // works, and a SecurityException needs a security manager.
+    @ExcludeFromCoverage
+    private fun guardedByFileErrors(block: () -> File?): File? = try {
+        block()
+    } catch (_: IOException) {
+        null
+    } catch (_: SecurityException) {
+        null
+    }
+
+    private fun trustedCacheDir(): File? {
         val dir = cacheRoot().resolve(BuildInfo.VERSION).resolve("${osPrefix}_$archSuffix")
-        return try {
-            dir.mkdirs()
-            val path = dir.toPath()
-            if (Files.isSymbolicLink(path) || !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) return null
-            if (isPosix) {
-                if (!isOwnedByMe(path)) return null
-                restrictToOwner(dir)
-                val permissions =
-                    Files
-                        .readAttributes(
-                            path,
-                            PosixFileAttributes::class.java,
-                            LinkOption.NOFOLLOW_LINKS,
-                        ).permissions()
-                if (permissions != PosixFilePermissions.fromString("rwx------")) return null
-            }
-            dir
-        } catch (_: IOException) {
-            null
-        } catch (_: SecurityException) {
-            null
-        }
+        dir.mkdirs()
+        val path = dir.toPath()
+        if (Files.isSymbolicLink(path) || !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) return null
+        if (!isTrustedOnPosix(path, dir)) return null
+        return dir
+    }
+
+    // The Windows branch (no POSIX attributes) can not run on the hosts that measure coverage, and
+    // chmod can not fail on a directory we own: the permission re-check is a defence in depth.
+    @ExcludeFromCoverage
+    private fun isTrustedOnPosix(path: java.nio.file.Path, dir: File): Boolean {
+        if (!isPosix) return true
+        if (!isOwnedByMe(path)) return false
+        restrictToOwner(dir)
+        val permissions =
+            Files
+                .readAttributes(
+                    path,
+                    PosixFileAttributes::class.java,
+                    LinkOption.NOFOLLOW_LINKS,
+                ).permissions()
+        return permissions == PosixFilePermissions.fromString("rwx------")
     }
 
     /** A new directory only this process and user can use, for when the cache directory is unsafe. */
     private fun freshPrivateDir(): File {
-        val dir =
-            if (isPosix) {
-                Files.createTempDirectory(
-                    "sealite-",
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")),
-                )
-            } else {
-                Files.createTempDirectory("sealite-")
-            }
+        val dir = createPrivateTempDirectory()
         dir.toFile().deleteOnExit()
         return dir.toFile()
+    }
+
+    // The Windows branch (no POSIX attributes) can not run on the hosts that measure coverage.
+    @ExcludeFromCoverage
+    private fun createPrivateTempDirectory(): java.nio.file.Path = if (isPosix) {
+        Files.createTempDirectory(
+            "sealite-",
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")),
+        )
+    } else {
+        Files.createTempDirectory("sealite-")
     }
 
     private fun isOwnedByMe(path: java.nio.file.Path): Boolean {
@@ -215,12 +238,25 @@ internal actual object NativeLibraryLoader {
         val base =
             when (osPrefix) {
                 "osx" -> File(home, "Library/Caches")
-                "windows" -> System.getenv("LOCALAPPDATA")?.let(::File) ?: File(home, "AppData/Local")
-                else -> System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotBlank() }?.let(::File) ?: File(home, ".cache")
+                "windows" -> windowsCacheBase(home)
+                else -> xdgCacheBase(home)
             }
         return File(base, "sealite")
     }
 
+    // Reads an environment variable, which one JVM run can not vary: excluded from the report and
+    // checked by LoaderEnvironmentTest, which the build runs once per environment.
+    @ExcludeFromCoverage
+    private fun windowsCacheBase(home: String): File =
+        System.getenv("LOCALAPPDATA")?.let(::File) ?: File(home, "AppData/Local")
+
+    // Same as windowsCacheBase.
+    @ExcludeFromCoverage
+    private fun xdgCacheBase(home: String): File =
+        System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotBlank() }?.let(::File) ?: File(home, ".cache")
+
+    // Unreachable in a test: the directory is ours, so chmod works, and POSIX hosts support the view.
+    @ExcludeFromCoverage
     private fun restrictToOwner(dir: File) {
         // Best effort: owner-only on POSIX file systems, a no-op elsewhere.
         try {
