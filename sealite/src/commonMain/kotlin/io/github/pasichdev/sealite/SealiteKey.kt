@@ -62,6 +62,8 @@ public class SealiteKey private constructor(
         private const val RAW_KEY_SIZE = 32
         private const val SALT_SIZE = 16
         private const val ZERO: Byte = 0
+        private const val RAW_LITERAL_OVERHEAD = 3 // x, ' and '
+        private val RAW_LITERAL_DIGITS = setOf(64, 96, 160)
 
         /**
          * A 256-bit key used as is, with no key derivation (SQLCipher's raw-key form). The
@@ -98,16 +100,38 @@ public class SealiteKey private constructor(
          * A passphrase that SQLCipher stretches with PBKDF2 on every connection open. Slower than
          * [raw] (Room opens up to five connections); prefer [raw] when the app owns the key.
          *
-         * The passphrase is encoded as UTF-8. SQLCipher itself reads a passphrase that has the
-         * form `x'<hex>'` as a raw key, so never build a passphrase from untrusted input.
+         * The passphrase is encoded as UTF-8. A passphrase in SQLCipher's raw-key form
+         * (`x'` + 64, 96 or 160 hex digits + `'`) is refused: SQLCipher would use it as the key
+         * itself and skip PBKDF2. Use [raw] for raw keys.
          *
          * @throws IllegalArgumentException if [passphrase] is empty (an empty key would leave the
-         *   database unencrypted) or is not well-formed UTF-16 (an unpaired surrogate has no UTF-8
+         *   database unencrypted), has SQLCipher's raw-key form, or is not well-formed UTF-16 (an
+         *   unpaired surrogate has no UTF-8
          *   form, and other SQLCipher implementations would encode it differently).
          */
         public fun passphrase(passphrase: CharArray): SealiteKey {
             require(passphrase.isNotEmpty()) { "An empty passphrase would leave the database unencrypted" }
+            require(!looksLikeRawKey(passphrase)) {
+                "SQLCipher would read this passphrase as a raw key and skip PBKDF2; use SealiteKey.raw"
+            }
             return SealiteKey(utf8(passphrase), Kind.PASSPHRASE)
+        }
+
+        /**
+         * SQLCipher's own rule for a raw key given as key data: `x'` (any case), then only hex
+         * digits, then `'`, with exactly 64 (key), 96 (key + salt) or 160 (key + HMAC key + salt)
+         * digits. Other even lengths still go through PBKDF2.
+         */
+        private fun looksLikeRawKey(chars: CharArray): Boolean {
+            val digits = chars.size - RAW_LITERAL_OVERHEAD
+            if (digits !in RAW_LITERAL_DIGITS) return false
+            if (chars[0] != 'x' && chars[0] != 'X') return false
+            if (chars[1] != '\'' || chars[chars.size - 1] != '\'') return false
+            for (index in 2 until chars.size - 1) {
+                val c = chars[index]
+                if (c !in '0'..'9' && c !in 'a'..'f' && c !in 'A'..'F') return false
+            }
+            return true
         }
 
         /** `x'` + hex(key) [+ hex(salt)] + `'`, built without any intermediate `String`. */

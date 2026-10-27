@@ -5,6 +5,7 @@ package io.github.pasichdev.sealite.internal
 
 import android.system.ErrnoException
 import android.system.Os
+import android.system.OsConstants
 import java.io.File
 import java.io.IOException
 
@@ -15,12 +16,27 @@ internal actual fun deleteFileIfExists(path: String) {
     if (!file.delete() && file.exists()) throw IOException("Cannot delete $path")
 }
 
-internal actual fun moveFileAtomically(from: String, to: String) {
-    // rename(2) replaces an existing target: refuse first.
-    if (File(to).exists()) throw IOException("$to already exists")
+// File.createTempFile creates exclusively, with a random name, in the app's own directory.
+internal actual fun createUniqueFileNextTo(path: String): String {
+    val target = File(path).absoluteFile
+    return File.createTempFile(".${target.name}.sealite-", "", target.parentFile).path
+}
+
+// Target exists, target appeared before the rename fallback, rename failed: three distinct outcomes.
+@Suppress("ThrowsCount")
+internal actual fun publishWithoutReplacing(from: String, to: String) {
     try {
-        Os.rename(from, to)
+        Os.link(from, to)
     } catch (e: ErrnoException) {
-        throw IOException("Cannot rename $from to $to: ${e.message}", e)
+        if (e.errno == OsConstants.EEXIST) throw IllegalStateException("$to already exists", e)
+        // A file system without hard links: refuse an existing target, then rename.
+        if (File(to).exists()) throw IllegalStateException("$to already exists", e)
+        try {
+            Os.rename(from, to)
+        } catch (renameError: ErrnoException) {
+            throw IOException("Cannot move $from to $to: ${renameError.message}", renameError)
+        }
+        return
     }
+    deleteFileIfExists(from)
 }

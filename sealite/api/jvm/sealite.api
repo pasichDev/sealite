@@ -116,6 +116,10 @@ public final class io/github/pasichdev/sealite/SealiteError : java/lang/Enum {
 	public static fun values ()[Lio/github/pasichdev/sealite/SealiteError;
 }
 
+public final class io/github/pasichdev/sealite/SealiteException : java/lang/RuntimeException {
+	public final fun getError ()Lio/github/pasichdev/sealite/SealiteError;
+}
+
 public final class io/github/pasichdev/sealite/SealiteKey : java/lang/AutoCloseable {
 	public static final field Companion Lio/github/pasichdev/sealite/SealiteKey$Companion;
 	public fun close ()V

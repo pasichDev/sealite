@@ -7,10 +7,18 @@ package io.github.pasichdev.sealite.internal
 internal expect fun deleteFileIfExists(path: String)
 
 /**
- * Renames [from] to [to] on the same file system, atomically: a reader sees either no [to] or the
- * complete file. Throws if [to] exists or the rename fails.
+ * Creates a new, empty file with an unpredictable name in the directory of [path]
+ * (`.<name of path>.sealite-<random>`), exclusively: it never opens an existing file. Returns
+ * its path.
  */
-internal expect fun moveFileAtomically(from: String, to: String)
+internal expect fun createUniqueFileNextTo(path: String): String
+
+/**
+ * Makes the complete file [from] appear under [to] and removes [from], never replacing an existing
+ * [to]: a hard link, which fails atomically when [to] exists, then an unlink of [from]. Throws
+ * [IllegalStateException] if [to] exists.
+ */
+internal expect fun publishWithoutReplacing(from: String, to: String)
 
 /** The main database file and the sidecar files SQLite may create next to it. */
 internal fun databaseFiles(path: String): List<String> = listOf(path, "$path-journal", "$path-wal", "$path-shm")
