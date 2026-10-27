@@ -1,0 +1,129 @@
+public final class io/github/pasichdev/sealite/Sealite {
+	public static final field INSTANCE Lio/github/pasichdev/sealite/Sealite;
+	public static final fun check (Ljava/lang/String;Lio/github/pasichdev/sealite/SealiteKey;)Lio/github/pasichdev/sealite/Sealite$CheckResult;
+	public static final fun check (Ljava/lang/String;Lio/github/pasichdev/sealite/SealiteKey;Lio/github/pasichdev/sealite/SealiteConfig;)Lio/github/pasichdev/sealite/Sealite$CheckResult;
+	public static final fun encryptPlaintext (Ljava/lang/String;Ljava/lang/String;Lio/github/pasichdev/sealite/SealiteKey;)V
+	public static final fun encryptPlaintext (Ljava/lang/String;Ljava/lang/String;Lio/github/pasichdev/sealite/SealiteKey;Lio/github/pasichdev/sealite/SealiteConfig;)V
+	public static final fun errorOf (Ljava/lang/Throwable;)Lio/github/pasichdev/sealite/SealiteError;
+	public static final fun getVersions ()Lio/github/pasichdev/sealite/Sealite$Versions;
+	public static final fun rekey (Ljava/lang/String;Lio/github/pasichdev/sealite/SealiteKey;Lio/github/pasichdev/sealite/SealiteKey;)V
+	public static final fun rekey (Ljava/lang/String;Lio/github/pasichdev/sealite/SealiteKey;Lio/github/pasichdev/sealite/SealiteKey;Lio/github/pasichdev/sealite/SealiteConfig;)V
+}
+
+public abstract interface class io/github/pasichdev/sealite/Sealite$CheckResult {
+}
+
+public final class io/github/pasichdev/sealite/Sealite$CheckResult$Missing : io/github/pasichdev/sealite/Sealite$CheckResult {
+	public static final field INSTANCE Lio/github/pasichdev/sealite/Sealite$CheckResult$Missing;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/pasichdev/sealite/Sealite$CheckResult$NotEncrypted : io/github/pasichdev/sealite/Sealite$CheckResult {
+	public static final field INSTANCE Lio/github/pasichdev/sealite/Sealite$CheckResult$NotEncrypted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/pasichdev/sealite/Sealite$CheckResult$Ok : io/github/pasichdev/sealite/Sealite$CheckResult {
+	public static final field INSTANCE Lio/github/pasichdev/sealite/Sealite$CheckResult$Ok;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/pasichdev/sealite/Sealite$CheckResult$WrongKey : io/github/pasichdev/sealite/Sealite$CheckResult {
+	public static final field INSTANCE Lio/github/pasichdev/sealite/Sealite$CheckResult$WrongKey;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/pasichdev/sealite/Sealite$Versions {
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCryptoProvider ()Ljava/lang/String;
+	public final fun getCryptoProviderVersion ()Ljava/lang/String;
+	public final fun getSealite ()Ljava/lang/String;
+	public final fun getSqlcipher ()Ljava/lang/String;
+	public final fun getSqlite ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/pasichdev/sealite/SealiteConfig {
+	public static final field Companion Lio/github/pasichdev/sealite/SealiteConfig$Companion;
+	public static final field DEFAULT Lio/github/pasichdev/sealite/SealiteConfig;
+	public static final fun builder ()Lio/github/pasichdev/sealite/SealiteConfig$Builder;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCompatibility ()Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;
+	public final fun getKdfIterations ()Ljava/lang/Integer;
+	public final fun getPageSize ()Ljava/lang/Integer;
+	public fun hashCode ()I
+	public final fun toBuilder ()Lio/github/pasichdev/sealite/SealiteConfig$Builder;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/github/pasichdev/sealite/SealiteConfig$Builder {
+	public fun <init> ()V
+	public final fun build ()Lio/github/pasichdev/sealite/SealiteConfig;
+	public final fun compatibility (Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;)Lio/github/pasichdev/sealite/SealiteConfig$Builder;
+	public final fun getCompatibility ()Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;
+	public final fun getKdfIterations ()Ljava/lang/Integer;
+	public final fun getPageSize ()Ljava/lang/Integer;
+	public final fun kdfIterations (Ljava/lang/Integer;)Lio/github/pasichdev/sealite/SealiteConfig$Builder;
+	public final fun pageSize (Ljava/lang/Integer;)Lio/github/pasichdev/sealite/SealiteConfig$Builder;
+	public final fun setCompatibility (Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;)V
+	public final fun setKdfIterations (Ljava/lang/Integer;)V
+	public final fun setPageSize (Ljava/lang/Integer;)V
+}
+
+public final class io/github/pasichdev/sealite/SealiteConfig$Companion {
+	public final fun builder ()Lio/github/pasichdev/sealite/SealiteConfig$Builder;
+}
+
+public final class io/github/pasichdev/sealite/SealiteConfig$Compatibility : java/lang/Enum {
+	public static final field SQLCIPHER_3 Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;
+	public static final field SQLCIPHER_4 Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;
+	public static fun values ()[Lio/github/pasichdev/sealite/SealiteConfig$Compatibility;
+}
+
+public final class io/github/pasichdev/sealite/SealiteConfigKt {
+	public static final fun SealiteConfig (Lkotlin/jvm/functions/Function1;)Lio/github/pasichdev/sealite/SealiteConfig;
+}
+
+public final class io/github/pasichdev/sealite/SealiteDriver : androidx/sqlite/SQLiteDriver, java/lang/AutoCloseable {
+	public fun <init> (Lio/github/pasichdev/sealite/SealiteKey;)V
+	public fun <init> (Lio/github/pasichdev/sealite/SealiteKey;Lio/github/pasichdev/sealite/SealiteConfig;)V
+	public fun close ()V
+	public fun hasConnectionPool ()Z
+	public fun open (Ljava/lang/String;)Landroidx/sqlite/SQLiteConnection;
+	public final fun open (Ljava/lang/String;I)Landroidx/sqlite/SQLiteConnection;
+}
+
+public final class io/github/pasichdev/sealite/SealiteError : java/lang/Enum {
+	public static final field NOT_ENCRYPTED Lio/github/pasichdev/sealite/SealiteError;
+	public static final field NOT_KEYED Lio/github/pasichdev/sealite/SealiteError;
+	public static final field PROVIDER_MISSING Lio/github/pasichdev/sealite/SealiteError;
+	public static final field REKEY_FAILED Lio/github/pasichdev/sealite/SealiteError;
+	public static final field REKEY_UNVERIFIED Lio/github/pasichdev/sealite/SealiteError;
+	public static final field WRONG_KEY Lio/github/pasichdev/sealite/SealiteError;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/github/pasichdev/sealite/SealiteError;
+	public static fun values ()[Lio/github/pasichdev/sealite/SealiteError;
+}
+
+public final class io/github/pasichdev/sealite/SealiteKey : java/lang/AutoCloseable {
+	public static final field Companion Lio/github/pasichdev/sealite/SealiteKey$Companion;
+	public fun close ()V
+}
+
+public final class io/github/pasichdev/sealite/SealiteKey$Companion {
+	public final fun passphrase ([C)Lio/github/pasichdev/sealite/SealiteKey;
+	public final fun raw ([B)Lio/github/pasichdev/sealite/SealiteKey;
+	public final fun raw ([B[B)Lio/github/pasichdev/sealite/SealiteKey;
+}
+

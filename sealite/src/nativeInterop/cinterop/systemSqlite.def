@@ -1,0 +1,6 @@
+# Test-only: the operating system's own libsqlite3, to prove it coexists with the renamed
+# SQLCipher inside libsealite.a. Not part of the published klib.
+package = io.github.pasichdev.sealite.systemsqlite
+headers = sqlite3.h
+linkerOpts = -lsqlite3
+noStringConversion = sqlite3_prepare sqlite3_prepare_v2 sqlite3_prepare_v3

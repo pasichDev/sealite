@@ -1,0 +1,10 @@
+# Consumer rules, shipped inside the AAR (proguard.txt).
+#
+# libsealite_jni.so registers its native methods by class and method name (RegisterNatives in
+# JNI_OnLoad) and throws androidx.sqlite.SQLiteException by name (FindClass + ThrowNew). R8 sees
+# neither from Kotlin, so without these rules a minified app fails to load the library or loses the
+# exception type. Ported from the rules of androidx.sqlite:sqlite-bundled, which has the same shape.
+-keepclasseswithmembers class io.github.pasichdev.sealite.internal.JniRawDbKt { native <methods>; }
+-keepclasseswithmembers class io.github.pasichdev.sealite.internal.JniStatementKt { native <methods>; }
+-keep class io.github.pasichdev.sealite.internal.JniStatement
+-keep class androidx.sqlite.SQLiteException { <init>(java.lang.String); }

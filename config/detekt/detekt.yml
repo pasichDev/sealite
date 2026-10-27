@@ -1,0 +1,69 @@
+# Layered on top of detekt's defaults (buildUponDefaultConfig). Only the deviations are listed.
+# Formatting is ktlint's job (Spotless), so the formatting rules are not enabled here.
+
+complexity:
+  LongMethod:
+    allowedLines: 80
+  LongParameterList:
+    allowedFunctionParameters: 8
+    allowedConstructorParameters: 8
+    ignoreDefaultParameters: true
+  CyclomaticComplexMethod:
+    allowedComplexity: 20
+  TooManyFunctions:
+    allowedFunctionsPerFile: 20
+    allowedFunctionsPerClass: 20
+    allowedFunctionsPerObject: 20
+    ignoreOverridden: true
+
+style:
+  MagicNumber:
+    ignoreNumbers: ['-1', '0', '1', '2', '3', '4', '8', '16', '32']
+    ignoreHashCodeFunction: true
+    ignorePropertyDeclaration: true
+    ignoreCompanionObjectPropertyDeclaration: true
+    ignoreConstantDeclaration: true
+    ignoreAnnotation: true
+    # SealiteKey (UTF-8 bit arithmetic), SealiteConfig (page-size range) and OpenSequence are the
+    # protected security core: the numbers are suppressed here until the code can be touched.
+    excludes:
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/nativeTest/**'
+      - '**/SealiteKey.kt'
+      - '**/SealiteConfig.kt'
+      - '**/OpenSequence.kt'
+  ReturnCount:
+    max: 4
+    excludeGuardClauses: true
+  MaxLineLength:
+    maxLineLength: 120
+    excludes: ['**/OpenSequence.kt'] # protected file, one over-long line
+  UnusedPrivateProperty:
+    active: true
+  ForbiddenComment:
+    active: true
+    comments:
+      - 'FIXME:'
+      - 'STOPSHIP:'
+
+naming:
+  MatchingDeclarationName:
+    active: false # files are named <Type>.<platform>.kt
+  FunctionNaming:
+    excludes: ['**/commonTest/**', '**/jvmTest/**', '**/nativeTest/**']
+
+exceptions:
+  TooGenericExceptionCaught:
+    active: true
+    excludes: ['**/OpenSequence.kt'] # protected file: closes the handle, then rethrows
+    allowedExceptionNameRegex: '_|(ignore|expected).*'
+  SwallowedException:
+    active: true
+    ignoredExceptionTypes:
+      - 'NumberFormatException'
+      - 'InterruptedException'
+
+empty-blocks:
+  EmptyWhileBlock:
+    excludes: ['**/OpenSequence.kt'] # protected file: drains a statement

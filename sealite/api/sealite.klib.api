@@ -1,0 +1,153 @@
+// Klib ABI Dump
+// Targets: [iosArm64, iosSimulatorArm64, macosArm64]
+// Rendering settings:
+// - Signature version: 2
+// - Show manifest properties: true
+// - Show declarations: true
+
+// Library unique name: <io.github.pasichdev:sealite>
+final enum class io.github.pasichdev.sealite/SealiteError : kotlin/Enum<io.github.pasichdev.sealite/SealiteError> { // io.github.pasichdev.sealite/SealiteError|null[0]
+    enum entry NOT_ENCRYPTED // io.github.pasichdev.sealite/SealiteError.NOT_ENCRYPTED|null[0]
+    enum entry NOT_KEYED // io.github.pasichdev.sealite/SealiteError.NOT_KEYED|null[0]
+    enum entry PROVIDER_MISSING // io.github.pasichdev.sealite/SealiteError.PROVIDER_MISSING|null[0]
+    enum entry REKEY_FAILED // io.github.pasichdev.sealite/SealiteError.REKEY_FAILED|null[0]
+    enum entry REKEY_UNVERIFIED // io.github.pasichdev.sealite/SealiteError.REKEY_UNVERIFIED|null[0]
+    enum entry WRONG_KEY // io.github.pasichdev.sealite/SealiteError.WRONG_KEY|null[0]
+
+    final val entries // io.github.pasichdev.sealite/SealiteError.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<io.github.pasichdev.sealite/SealiteError> // io.github.pasichdev.sealite/SealiteError.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): io.github.pasichdev.sealite/SealiteError // io.github.pasichdev.sealite/SealiteError.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<io.github.pasichdev.sealite/SealiteError> // io.github.pasichdev.sealite/SealiteError.values|values#static(){}[0]
+}
+
+final class io.github.pasichdev.sealite/SealiteConfig { // io.github.pasichdev.sealite/SealiteConfig|null[0]
+    final val compatibility // io.github.pasichdev.sealite/SealiteConfig.compatibility|{}compatibility[0]
+        final fun <get-compatibility>(): io.github.pasichdev.sealite/SealiteConfig.Compatibility // io.github.pasichdev.sealite/SealiteConfig.compatibility.<get-compatibility>|<get-compatibility>(){}[0]
+    final val kdfIterations // io.github.pasichdev.sealite/SealiteConfig.kdfIterations|{}kdfIterations[0]
+        final fun <get-kdfIterations>(): kotlin/Int? // io.github.pasichdev.sealite/SealiteConfig.kdfIterations.<get-kdfIterations>|<get-kdfIterations>(){}[0]
+    final val pageSize // io.github.pasichdev.sealite/SealiteConfig.pageSize|{}pageSize[0]
+        final fun <get-pageSize>(): kotlin/Int? // io.github.pasichdev.sealite/SealiteConfig.pageSize.<get-pageSize>|<get-pageSize>(){}[0]
+
+    final fun equals(kotlin/Any?): kotlin/Boolean // io.github.pasichdev.sealite/SealiteConfig.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // io.github.pasichdev.sealite/SealiteConfig.hashCode|hashCode(){}[0]
+    final fun toBuilder(): io.github.pasichdev.sealite/SealiteConfig.Builder // io.github.pasichdev.sealite/SealiteConfig.toBuilder|toBuilder(){}[0]
+    final fun toString(): kotlin/String // io.github.pasichdev.sealite/SealiteConfig.toString|toString(){}[0]
+
+    final enum class Compatibility : kotlin/Enum<io.github.pasichdev.sealite/SealiteConfig.Compatibility> { // io.github.pasichdev.sealite/SealiteConfig.Compatibility|null[0]
+        enum entry SQLCIPHER_3 // io.github.pasichdev.sealite/SealiteConfig.Compatibility.SQLCIPHER_3|null[0]
+        enum entry SQLCIPHER_4 // io.github.pasichdev.sealite/SealiteConfig.Compatibility.SQLCIPHER_4|null[0]
+
+        final val entries // io.github.pasichdev.sealite/SealiteConfig.Compatibility.entries|#static{}entries[0]
+            final fun <get-entries>(): kotlin.enums/EnumEntries<io.github.pasichdev.sealite/SealiteConfig.Compatibility> // io.github.pasichdev.sealite/SealiteConfig.Compatibility.entries.<get-entries>|<get-entries>#static(){}[0]
+
+        final fun valueOf(kotlin/String): io.github.pasichdev.sealite/SealiteConfig.Compatibility // io.github.pasichdev.sealite/SealiteConfig.Compatibility.valueOf|valueOf#static(kotlin.String){}[0]
+        final fun values(): kotlin/Array<io.github.pasichdev.sealite/SealiteConfig.Compatibility> // io.github.pasichdev.sealite/SealiteConfig.Compatibility.values|values#static(){}[0]
+    }
+
+    final class Builder { // io.github.pasichdev.sealite/SealiteConfig.Builder|null[0]
+        constructor <init>() // io.github.pasichdev.sealite/SealiteConfig.Builder.<init>|<init>(){}[0]
+
+        final var compatibility // io.github.pasichdev.sealite/SealiteConfig.Builder.compatibility|{}compatibility[0]
+            final fun <get-compatibility>(): io.github.pasichdev.sealite/SealiteConfig.Compatibility // io.github.pasichdev.sealite/SealiteConfig.Builder.compatibility.<get-compatibility>|<get-compatibility>(){}[0]
+            final fun <set-compatibility>(io.github.pasichdev.sealite/SealiteConfig.Compatibility) // io.github.pasichdev.sealite/SealiteConfig.Builder.compatibility.<set-compatibility>|<set-compatibility>(io.github.pasichdev.sealite.SealiteConfig.Compatibility){}[0]
+        final var kdfIterations // io.github.pasichdev.sealite/SealiteConfig.Builder.kdfIterations|{}kdfIterations[0]
+            final fun <get-kdfIterations>(): kotlin/Int? // io.github.pasichdev.sealite/SealiteConfig.Builder.kdfIterations.<get-kdfIterations>|<get-kdfIterations>(){}[0]
+            final fun <set-kdfIterations>(kotlin/Int?) // io.github.pasichdev.sealite/SealiteConfig.Builder.kdfIterations.<set-kdfIterations>|<set-kdfIterations>(kotlin.Int?){}[0]
+        final var pageSize // io.github.pasichdev.sealite/SealiteConfig.Builder.pageSize|{}pageSize[0]
+            final fun <get-pageSize>(): kotlin/Int? // io.github.pasichdev.sealite/SealiteConfig.Builder.pageSize.<get-pageSize>|<get-pageSize>(){}[0]
+            final fun <set-pageSize>(kotlin/Int?) // io.github.pasichdev.sealite/SealiteConfig.Builder.pageSize.<set-pageSize>|<set-pageSize>(kotlin.Int?){}[0]
+
+        final fun build(): io.github.pasichdev.sealite/SealiteConfig // io.github.pasichdev.sealite/SealiteConfig.Builder.build|build(){}[0]
+        final fun compatibility(io.github.pasichdev.sealite/SealiteConfig.Compatibility): io.github.pasichdev.sealite/SealiteConfig.Builder // io.github.pasichdev.sealite/SealiteConfig.Builder.compatibility|compatibility(io.github.pasichdev.sealite.SealiteConfig.Compatibility){}[0]
+        final fun kdfIterations(kotlin/Int?): io.github.pasichdev.sealite/SealiteConfig.Builder // io.github.pasichdev.sealite/SealiteConfig.Builder.kdfIterations|kdfIterations(kotlin.Int?){}[0]
+        final fun pageSize(kotlin/Int?): io.github.pasichdev.sealite/SealiteConfig.Builder // io.github.pasichdev.sealite/SealiteConfig.Builder.pageSize|pageSize(kotlin.Int?){}[0]
+    }
+
+    final object Companion { // io.github.pasichdev.sealite/SealiteConfig.Companion|null[0]
+        final val DEFAULT // io.github.pasichdev.sealite/SealiteConfig.Companion.DEFAULT|{}DEFAULT[0]
+            final fun <get-DEFAULT>(): io.github.pasichdev.sealite/SealiteConfig // io.github.pasichdev.sealite/SealiteConfig.Companion.DEFAULT.<get-DEFAULT>|<get-DEFAULT>(){}[0]
+
+        final fun builder(): io.github.pasichdev.sealite/SealiteConfig.Builder // io.github.pasichdev.sealite/SealiteConfig.Companion.builder|builder(){}[0]
+    }
+}
+
+final class io.github.pasichdev.sealite/SealiteDriver : androidx.sqlite/SQLiteDriver, kotlin/AutoCloseable { // io.github.pasichdev.sealite/SealiteDriver|null[0]
+    constructor <init>(io.github.pasichdev.sealite/SealiteKey) // io.github.pasichdev.sealite/SealiteDriver.<init>|<init>(io.github.pasichdev.sealite.SealiteKey){}[0]
+    constructor <init>(io.github.pasichdev.sealite/SealiteKey, io.github.pasichdev.sealite/SealiteConfig) // io.github.pasichdev.sealite/SealiteDriver.<init>|<init>(io.github.pasichdev.sealite.SealiteKey;io.github.pasichdev.sealite.SealiteConfig){}[0]
+
+    final val hasConnectionPool // io.github.pasichdev.sealite/SealiteDriver.hasConnectionPool|{}hasConnectionPool[0]
+        final fun <get-hasConnectionPool>(): kotlin/Boolean // io.github.pasichdev.sealite/SealiteDriver.hasConnectionPool.<get-hasConnectionPool>|<get-hasConnectionPool>(){}[0]
+
+    final fun close() // io.github.pasichdev.sealite/SealiteDriver.close|close(){}[0]
+    final fun open(kotlin/String): androidx.sqlite/SQLiteConnection // io.github.pasichdev.sealite/SealiteDriver.open|open(kotlin.String){}[0]
+    final fun open(kotlin/String, kotlin/Int): androidx.sqlite/SQLiteConnection // io.github.pasichdev.sealite/SealiteDriver.open|open(kotlin.String;kotlin.Int){}[0]
+}
+
+final class io.github.pasichdev.sealite/SealiteKey : kotlin/AutoCloseable { // io.github.pasichdev.sealite/SealiteKey|null[0]
+    final fun close() // io.github.pasichdev.sealite/SealiteKey.close|close(){}[0]
+
+    final object Companion { // io.github.pasichdev.sealite/SealiteKey.Companion|null[0]
+        final fun passphrase(kotlin/CharArray): io.github.pasichdev.sealite/SealiteKey // io.github.pasichdev.sealite/SealiteKey.Companion.passphrase|passphrase(kotlin.CharArray){}[0]
+        final fun raw(kotlin/ByteArray): io.github.pasichdev.sealite/SealiteKey // io.github.pasichdev.sealite/SealiteKey.Companion.raw|raw(kotlin.ByteArray){}[0]
+        final fun raw(kotlin/ByteArray, kotlin/ByteArray): io.github.pasichdev.sealite/SealiteKey // io.github.pasichdev.sealite/SealiteKey.Companion.raw|raw(kotlin.ByteArray;kotlin.ByteArray){}[0]
+    }
+}
+
+final object io.github.pasichdev.sealite/Sealite { // io.github.pasichdev.sealite/Sealite|null[0]
+    final val versions // io.github.pasichdev.sealite/Sealite.versions|{}versions[0]
+        final fun <get-versions>(): io.github.pasichdev.sealite/Sealite.Versions // io.github.pasichdev.sealite/Sealite.versions.<get-versions>|<get-versions>(){}[0]
+
+    final fun check(kotlin/String, io.github.pasichdev.sealite/SealiteKey): io.github.pasichdev.sealite/Sealite.CheckResult // io.github.pasichdev.sealite/Sealite.check|check(kotlin.String;io.github.pasichdev.sealite.SealiteKey){}[0]
+    final fun check(kotlin/String, io.github.pasichdev.sealite/SealiteKey, io.github.pasichdev.sealite/SealiteConfig): io.github.pasichdev.sealite/Sealite.CheckResult // io.github.pasichdev.sealite/Sealite.check|check(kotlin.String;io.github.pasichdev.sealite.SealiteKey;io.github.pasichdev.sealite.SealiteConfig){}[0]
+    final fun encryptPlaintext(kotlin/String, kotlin/String, io.github.pasichdev.sealite/SealiteKey) // io.github.pasichdev.sealite/Sealite.encryptPlaintext|encryptPlaintext(kotlin.String;kotlin.String;io.github.pasichdev.sealite.SealiteKey){}[0]
+    final fun encryptPlaintext(kotlin/String, kotlin/String, io.github.pasichdev.sealite/SealiteKey, io.github.pasichdev.sealite/SealiteConfig) // io.github.pasichdev.sealite/Sealite.encryptPlaintext|encryptPlaintext(kotlin.String;kotlin.String;io.github.pasichdev.sealite.SealiteKey;io.github.pasichdev.sealite.SealiteConfig){}[0]
+    final fun errorOf(kotlin/Throwable): io.github.pasichdev.sealite/SealiteError? // io.github.pasichdev.sealite/Sealite.errorOf|errorOf(kotlin.Throwable){}[0]
+    final fun rekey(kotlin/String, io.github.pasichdev.sealite/SealiteKey, io.github.pasichdev.sealite/SealiteKey) // io.github.pasichdev.sealite/Sealite.rekey|rekey(kotlin.String;io.github.pasichdev.sealite.SealiteKey;io.github.pasichdev.sealite.SealiteKey){}[0]
+    final fun rekey(kotlin/String, io.github.pasichdev.sealite/SealiteKey, io.github.pasichdev.sealite/SealiteKey, io.github.pasichdev.sealite/SealiteConfig) // io.github.pasichdev.sealite/Sealite.rekey|rekey(kotlin.String;io.github.pasichdev.sealite.SealiteKey;io.github.pasichdev.sealite.SealiteKey;io.github.pasichdev.sealite.SealiteConfig){}[0]
+
+    sealed interface CheckResult { // io.github.pasichdev.sealite/Sealite.CheckResult|null[0]
+        final object Missing : io.github.pasichdev.sealite/Sealite.CheckResult { // io.github.pasichdev.sealite/Sealite.CheckResult.Missing|null[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // io.github.pasichdev.sealite/Sealite.CheckResult.Missing.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // io.github.pasichdev.sealite/Sealite.CheckResult.Missing.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // io.github.pasichdev.sealite/Sealite.CheckResult.Missing.toString|toString(){}[0]
+        }
+
+        final object NotEncrypted : io.github.pasichdev.sealite/Sealite.CheckResult { // io.github.pasichdev.sealite/Sealite.CheckResult.NotEncrypted|null[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // io.github.pasichdev.sealite/Sealite.CheckResult.NotEncrypted.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // io.github.pasichdev.sealite/Sealite.CheckResult.NotEncrypted.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // io.github.pasichdev.sealite/Sealite.CheckResult.NotEncrypted.toString|toString(){}[0]
+        }
+
+        final object Ok : io.github.pasichdev.sealite/Sealite.CheckResult { // io.github.pasichdev.sealite/Sealite.CheckResult.Ok|null[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // io.github.pasichdev.sealite/Sealite.CheckResult.Ok.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // io.github.pasichdev.sealite/Sealite.CheckResult.Ok.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // io.github.pasichdev.sealite/Sealite.CheckResult.Ok.toString|toString(){}[0]
+        }
+
+        final object WrongKey : io.github.pasichdev.sealite/Sealite.CheckResult { // io.github.pasichdev.sealite/Sealite.CheckResult.WrongKey|null[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // io.github.pasichdev.sealite/Sealite.CheckResult.WrongKey.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // io.github.pasichdev.sealite/Sealite.CheckResult.WrongKey.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // io.github.pasichdev.sealite/Sealite.CheckResult.WrongKey.toString|toString(){}[0]
+        }
+    }
+
+    final class Versions { // io.github.pasichdev.sealite/Sealite.Versions|null[0]
+        final val cryptoProvider // io.github.pasichdev.sealite/Sealite.Versions.cryptoProvider|{}cryptoProvider[0]
+            final fun <get-cryptoProvider>(): kotlin/String // io.github.pasichdev.sealite/Sealite.Versions.cryptoProvider.<get-cryptoProvider>|<get-cryptoProvider>(){}[0]
+        final val cryptoProviderVersion // io.github.pasichdev.sealite/Sealite.Versions.cryptoProviderVersion|{}cryptoProviderVersion[0]
+            final fun <get-cryptoProviderVersion>(): kotlin/String // io.github.pasichdev.sealite/Sealite.Versions.cryptoProviderVersion.<get-cryptoProviderVersion>|<get-cryptoProviderVersion>(){}[0]
+        final val sealite // io.github.pasichdev.sealite/Sealite.Versions.sealite|{}sealite[0]
+            final fun <get-sealite>(): kotlin/String // io.github.pasichdev.sealite/Sealite.Versions.sealite.<get-sealite>|<get-sealite>(){}[0]
+        final val sqlcipher // io.github.pasichdev.sealite/Sealite.Versions.sqlcipher|{}sqlcipher[0]
+            final fun <get-sqlcipher>(): kotlin/String // io.github.pasichdev.sealite/Sealite.Versions.sqlcipher.<get-sqlcipher>|<get-sqlcipher>(){}[0]
+        final val sqlite // io.github.pasichdev.sealite/Sealite.Versions.sqlite|{}sqlite[0]
+            final fun <get-sqlite>(): kotlin/String // io.github.pasichdev.sealite/Sealite.Versions.sqlite.<get-sqlite>|<get-sqlite>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // io.github.pasichdev.sealite/Sealite.Versions.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // io.github.pasichdev.sealite/Sealite.Versions.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // io.github.pasichdev.sealite/Sealite.Versions.toString|toString(){}[0]
+    }
+}
+
+final fun io.github.pasichdev.sealite/SealiteConfig(kotlin/Function1<io.github.pasichdev.sealite/SealiteConfig.Builder, kotlin/Unit>): io.github.pasichdev.sealite/SealiteConfig // io.github.pasichdev.sealite/SealiteConfig|SealiteConfig(kotlin.Function1<io.github.pasichdev.sealite.SealiteConfig.Builder,kotlin.Unit>){}[0]

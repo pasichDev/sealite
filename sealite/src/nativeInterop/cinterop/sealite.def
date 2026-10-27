@@ -1,0 +1,13 @@
+package = io.github.pasichdev.sealite.cinterop
+headers = sealite_rename.h sqlite3.h
+
+# The rename header is parsed before sqlite3.h (a force-included `-include` crashes the indexer), so Kotlin sees sealite_sqlite3_* (the names libsealite.a
+# defines). SQLITE_HAS_CODEC makes sqlite3.h declare sqlite3_key_v2 / sqlite3_rekey_v2.
+compilerOpts = -DSQLITE_HAS_CODEC
+linkerOpts = -framework Security -framework CoreFoundation
+
+# Keep Kotlin Strings out of the prepare functions: the driver passes UTF-16 buffers (prepare16).
+noStringConversion = sealite_sqlite3_prepare sealite_sqlite3_prepare_v2 sealite_sqlite3_prepare_v3 sealite_sqlite3_prepare16 sealite_sqlite3_prepare16_v2 sealite_sqlite3_prepare16_v3 sqlite3_prepare_v2 sqlite3_prepare_v3
+
+# libsealite.a is embedded into the klib: the path and file name are passed by build-logic
+# (sealite.native.gradle.kts), because they differ per target.

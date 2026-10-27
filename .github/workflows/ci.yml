@@ -1,0 +1,150 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PREBUILT: ${{ github.workspace }}/prebuilt-natives
+
+jobs:
+  natives:
+    uses: ./.github/workflows/natives.yml
+
+  jvm:
+    name: jvm (${{ matrix.name }})
+    needs: natives
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: JVM tests against the prebuilt natives
+        run: ./gradlew :sealite:jvmTest -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
+
+  android:
+    name: android (API ${{ matrix.api }} ${{ matrix.arch }})
+    needs: natives
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { api: 34, arch: x86_64 }
+          - { api: 24, arch: x86 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Device tests
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: default
+          disable-animations: true
+          script: ./gradlew :sealite:connectedAndroidDeviceTest -Psealite.prebuiltNatives=${{ env.PREBUILT }} --stacktrace
+
+  sample:
+    needs: natives
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: Assemble the sample (desktop + android) to catch API breaks
+        working-directory: sample
+        run: ../gradlew assemble -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Install clang-format (the version Spotless pins)
+        run: pipx install clang-format==22.1.8
+      - name: Spotless (ktlint for Kotlin and Gradle scripts, clang-format for the C glue)
+        run: ./gradlew spotlessCheck -Psealite.requireClangFormat --stacktrace
+      - name: detekt
+        run: ./gradlew :sealite:detekt --stacktrace
+
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: No forbidden wording in tracked files
+        run: |
+          # The pattern is assembled from pieces so this file does not match itself.
+          re="$(printf '%s|%s|%s|%s' 'clau''de' 'anthro''pic' 'co-authored''-by' 'generated'' with')"
+          hits="$(git grep -I -i -l -E "$re" -- . ':(exclude).github/workflows/ci.yml' || true)"
+          if [ -n "$hits" ]; then
+            echo "Forbidden wording in:"; echo "$hits"; exit 1
+          fi
+      - name: Private directories are not tracked
+        run: |
+          tracked="$(git ls-files -- notes reference "$(printf '%s%s' 'CLAU' 'DE.md')")"
+          if [ -n "$tracked" ]; then
+            echo "Tracked private paths:"; echo "$tracked"; exit 1
+          fi
+      - name: Every source file carries an SPDX identifier (or the upstream notice of a ported file)
+        run: |
+          missing="$(git ls-files -z -- 'sealite/src/*.kt' 'build-logic/src/*.kt' 'build-logic/*.kts' \
+            'sealite/*.kts' 'build.gradle.kts' 'settings.gradle.kts' 'sealite/src/native/*.c' 'sealite/src/native/*.h' \
+            | xargs -0 grep -L -E 'SPDX-License-Identifier|Android Open Source Project' || true)"
+          if [ -n "$missing" ]; then
+            echo "Missing '// SPDX-License-Identifier: Apache-2.0' in:"; echo "$missing"; exit 1
+          fi

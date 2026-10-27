@@ -1,0 +1,12 @@
+# Build
+.gradle/
+build/
+.kotlin/
+local.properties
+*.iml
+.idea/
+.DS_Store
+xcuserdata/
+
+# The build-logic package is named .../sealite/build/: do not ignore it.
+!build-logic/src/**/build/

@@ -1,0 +1,35 @@
+Sealite
+Copyright 2026 pasichdev
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Sealite is not affiliated with, or endorsed by, Zetetic LLC. "SQLCipher" is a trademark of Zetetic LLC
+and is used here only to describe file-format compatibility.
+
+The binary distributions of Sealite contain the following third-party components.
+
+--------------------------------------------------------------------------------------------------
+SQLCipher Community Edition 4.20.0
+  Copyright (c) 2025, ZETETIC LLC
+  License: BSD-3-Clause. Full text: licenses/SQLCIPHER-LICENSE.md
+  https://github.com/sqlcipher/sqlcipher
+
+SQLite 3.54.1 (part of SQLCipher 4.20.0)
+  License: public domain. Notice: licenses/SQLITE-LICENSE.txt
+  https://www.sqlite.org/
+
+OpenSSL 3.5.x (static libcrypto; Windows, Linux and Android natives only)
+  Copyright (c) The OpenSSL Project Authors
+  License: Apache-2.0. Full text: licenses/OPENSSL-LICENSE.txt
+  https://www.openssl.org/
+
+AndroidX SQLite (androidx.sqlite:sqlite-bundled), ported parts
+  Copyright The Android Open Source Project
+  License: Apache-2.0 (see LICENSE). The JNI glue and the Kotlin connection and statement classes
+  are adapted from this library; the affected files keep their original notice and state their
+  modifications.
+  https://developer.android.com/jetpack/androidx/releases/sqlite
+--------------------------------------------------------------------------------------------------
+
+The exact versions of the components linked into a given build are reported at run time by
+Sealite.versions.

@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 pasichdev
+
+package io.github.pasichdev.sealite
+
+import androidx.room.Dao
+import androidx.room.Database
+import androidx.room.Entity
+import androidx.room.Insert
+import androidx.room.PrimaryKey
+import androidx.room.Query
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runBlocking
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+@Entity(tableName = "note")
+data class NoteEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val body: String,
+)
+
+@Dao
+interface NoteDao {
+    @Insert
+    suspend fun insert(note: NoteEntity): Long
+
+    @Query("SELECT * FROM note ORDER BY id")
+    suspend fun all(): List<NoteEntity>
+
+    @Query("SELECT count(*) FROM note")
+    suspend fun count(): Int
+}
+
+@Database(entities = [NoteEntity::class], version = 1, exportSchema = false)
+abstract class NotesDatabase : RoomDatabase() {
+    abstract fun notes(): NoteDao
+}
+
+class RoomSealiteTest {
+    private val paths = mutableListOf<String>()
+    private val context = InstrumentationRegistry.getInstrumentation().targetContext
+
+    @AfterTest
+    fun cleanUp() {
+        paths.forEach(::deleteDatabaseFiles)
+    }
+
+    private fun build(
+        path: String,
+        driver: SealiteDriver,
+        journalMode: RoomDatabase.JournalMode = RoomDatabase.JournalMode.AUTOMATIC,
+    ): NotesDatabase = Room
+        .databaseBuilder<NotesDatabase>(context, name = path, factory = { NotesDatabase_Impl() })
+        .setDriver(driver)
+        .setJournalMode(journalMode)
+        .setQueryCoroutineContext(Dispatchers.IO)
+        .build()
+
+    private fun key(seed: Int) = SealiteKey.raw(ByteArray(32) { (it + seed).toByte() })
+
+    @Test
+    fun roomWorksThroughTheDriverAndAWrongKeyThrowsWithoutTouchingTheFile() {
+        val path = newTempDatabasePath().also { paths += it }
+
+        SealiteDriver(key(1)).use { driver ->
+            val db = build(path, driver)
+            try {
+                runBlocking {
+                    db.notes().insert(NoteEntity(body = "first"))
+                    db.notes().insert(NoteEntity(body = "second"))
+                    assertEquals(listOf("first", "second"), db.notes().all().map { it.body })
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+        val before = assertNotNull(readFileBytes(path))
+        assertFalse(before.startsWith(SQLITE_HEADER), "Room wrote a plaintext database")
+
+        SealiteDriver(key(2)).use { driver ->
+            val db = build(path, driver)
+            try {
+                val e = assertFailsWith<Throwable> { runBlocking { db.notes().all() } }
+                assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e), "Room threw: $e")
+            } finally {
+                db.close()
+            }
+        }
+
+        val after = assertNotNull(readFileBytes(path))
+        assertEquals(before.size, after.size)
+        assertContentEquals(before, after)
+
+        // The right key still reads everything.
+        SealiteDriver(key(1)).use { driver ->
+            val db = build(path, driver)
+            try {
+                assertEquals(2, runBlocking { db.notes().all() }.size)
+            } finally {
+                db.close()
+            }
+        }
+    }
+
+    private fun concurrentReadsWhileWriting(journalMode: RoomDatabase.JournalMode) {
+        val path = newTempDatabasePath().also { paths += it }
+        val total = 150
+        SealiteDriver(key(3)).use { driver ->
+            val db = build(path, driver, journalMode)
+            try {
+                runBlocking {
+                    coroutineScope {
+                        val writer =
+                            async(Dispatchers.IO) {
+                                for (i in 1..total) db.notes().insert(NoteEntity(body = "n-$i"))
+                            }
+                        val readers =
+                            List(4) {
+                                async(Dispatchers.IO) {
+                                    var last = 0
+                                    while (last < total) {
+                                        val rows = db.notes().all()
+                                        // Every read sees a consistent prefix of the writes.
+                                        assertTrue(rows.size >= last, "rows went backwards: ${rows.size} < $last")
+                                        rows.forEachIndexed { i, row -> assertEquals("n-${i + 1}", row.body) }
+                                        assertTrue(db.notes().count() >= rows.size)
+                                        last = rows.size
+                                    }
+                                }
+                            }
+                        (readers + writer).awaitAll()
+                    }
+                    assertEquals(total, db.notes().count())
+                }
+            } finally {
+                db.close()
+            }
+        }
+        val bytes = assertNotNull(readFileBytes(path))
+        assertFalse(bytes.startsWith(SQLITE_HEADER))
+        assertFalse(bytes.contains("n-1".encodeToByteArray()), "plaintext found in the database file")
+        SealiteDriver(key(3)).use { driver ->
+            val db = build(path, driver, journalMode)
+            try {
+                assertEquals(total, runBlocking { db.notes().count() })
+            } finally {
+                db.close()
+            }
+        }
+    }
+
+    @Test
+    fun concurrentReadsWhileWritingWithTheDefaultPool() =
+        concurrentReadsWhileWriting(RoomDatabase.JournalMode.AUTOMATIC)
+
+    @Test
+    fun concurrentReadsWhileWritingInWal() = concurrentReadsWhileWriting(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+
+    @Test
+    fun aPlaintextDatabaseThroughRoomIsReportedAsNotEncrypted() {
+        val path = newTempDatabasePath().also { paths += it }
+        writeFileBytes(path, PLAINTEXT_DATABASE)
+        SealiteDriver(key(1)).use { driver ->
+            val db = build(path, driver)
+            try {
+                val e = assertFailsWith<Throwable> { runBlocking { db.notes().all() } }
+                assertEquals(SealiteError.NOT_ENCRYPTED, Sealite.errorOf(e), "Room threw: $e")
+            } finally {
+                db.close()
+            }
+        }
+        assertContentEquals(PLAINTEXT_DATABASE, readFileBytes(path), "Room must not touch a plaintext file")
+    }
+}

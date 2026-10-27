@@ -1,0 +1,63 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste real keys, passphrases or real database files. For security problems use a
+        private security advisory instead.
+  - type: input
+    id: version
+    attributes:
+      label: Sealite version
+      description: "`Sealite.versions` prints the linked library versions."
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options:
+        - Android
+        - iOS
+        - macOS native
+        - JVM on macOS
+        - JVM on Windows
+        - JVM on Linux
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, device and JDK / Android API / Xcode version
+    validations:
+      required: true
+  - type: dropdown
+    id: usage
+    attributes:
+      label: Used through
+      options:
+        - Room 2.8
+        - Room 3
+        - androidx.sqlite directly
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal snippet or repository. Use a throwaway key and fake data.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Stack trace and logs
+      render: text
