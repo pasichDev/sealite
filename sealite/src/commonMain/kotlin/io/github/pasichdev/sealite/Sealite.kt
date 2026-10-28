@@ -233,9 +233,11 @@ public object Sealite {
      *   database, or [encryptedPath] or one of its sidecar files already exists.
      * @throws IllegalStateException if [encryptedPath] appeared while the copy was being built.
      *
-     * On a file system without hard links (FAT, some network shares) it fails with the platform's
-     * I/O exception: no other publish can be guaranteed never to replace a file, so none is
-     * attempted. App-private storage on Android, APFS, NTFS and ext4 all support hard links.
+     * On the JVM and Apple platforms the publish is a hard link, which refuses an existing target
+     * atomically; on a file system without hard links (FAT, some network shares) it fails with the
+     * platform's I/O exception rather than risk replacing a file. On Android, where apps may not
+     * create hard links, it is a check and a rename under a lock that every Sealite migration to the
+     * same path takes, across threads and processes (the lock file `.<name>.sealite.lock` stays).
      */
     // Any failure, whatever its type, must roll back and remove the temporary file, then rethrow.
     @Suppress("ThrowsCount", "TooGenericExceptionCaught")
