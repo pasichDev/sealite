@@ -107,7 +107,8 @@ public object Sealite {
      *
      * Close every other connection to the file first (the `RoomDatabase`). The file is locked
      * exclusively for the whole operation: a connection inside a transaction (or reading a WAL
-     * database) makes this fail with `SQLITE_BUSY` before anything is written. An idle connection
+     * database) makes this fail with [SealiteError.REKEY_FAILED] (caused by `SQLITE_BUSY`) before
+     * anything is written. An idle connection
      * that still holds [oldKey] does not block it; its next read then fails, it never returns wrong
      * data. After the commit the file is reopened with [newKey] and checked with
      * `PRAGMA quick_check`.
@@ -124,53 +125,89 @@ public object Sealite {
      * blocks the file system no longer references.
      *
      * @throws SealiteException with [SealiteError.WRONG_KEY] if [oldKey] does not open the file;
-     *   [SealiteError.REKEY_FAILED] if it failed before the commit, so the file is still under
-     *   [oldKey]; [SealiteError.REKEY_UNVERIFIED] if it failed after the commit, so the file is most
-     *   likely under [newKey] and both keys must be kept.
-     * @throws androidx.sqlite.SQLiteException (for example `SQLITE_BUSY`) if SQLite stopped it
-     *   before anything was written: the file is still under [oldKey].
-     * @throws IllegalArgumentException if there is no database at [path].
+     *   [SealiteError.REKEY_FAILED] if it failed before the commit (the cause is the original
+     *   failure, for example `SQLITE_BUSY`), so the file is still under [oldKey];
+     *   [SealiteError.REKEY_UNVERIFIED] if it failed after the commit, so the file is most likely
+     *   under [newKey] and both keys must be kept. Once the file is open with [oldKey], every
+     *   failure is one of these two: no `androidx.sqlite.SQLiteException` escapes.
+     * @throws IllegalArgumentException if there is no database at [path] (or the file is empty).
      */
-    // Each throw is a distinct, documented outcome (missing file, pre-commit, post-commit).
-    @Suppress("ThrowsCount")
     @JvmStatic
     public fun rekey(path: String, oldKey: SealiteKey, newKey: SealiteKey, config: SealiteConfig) {
-        require(readFileHeader(path, 1)?.isNotEmpty() == true) { "No database at $path" }
-        val db = OpenSequence.openVerified(path, OPEN_READWRITE, oldKey, config)
-        try {
-            // Hold an exclusive lock until close: no other connection can read pages while they
-            // change keys, and an open one makes this fail here, before anything is written.
-            db.exec("PRAGMA locking_mode = EXCLUSIVE")
-            db.exec("BEGIN EXCLUSIVE")
-            db.exec("COMMIT")
-            // WAL frames are decrypted with the connection's current key: fold them into the
-            // main file before the key changes.
-            val wal = db.queryString("PRAGMA journal_mode").equals("wal", ignoreCase = true)
-            if (wal) checkpoint(db)
+        rekey(path, oldKey, newKey, config, OpenSequence::openVerified)
+    }
 
-            val bytes = newKey.keyBytes()
-            try {
-                db.rekey(bytes)
-            } finally {
-                bytes.wipe()
-            }
-            requireCommitted(db)
+    /** [rekey] with the way a verified handle is opened injectable, so tests can inject faults. */
+    internal fun rekey(
+        path: String,
+        oldKey: SealiteKey,
+        newKey: SealiteKey,
+        config: SealiteConfig,
+        open: (String, Int, SealiteKey, SealiteConfig) -> RawDb,
+    ) {
+        require(readFileHeader(path, 1)?.isNotEmpty() == true) { "No database at $path" }
+        val db = openForRekey(path, oldKey, config, open)
+        try {
+            val wal = rekeyUntilCommitted(db, newKey)
             // From here on the new key is committed: any failure is "unverified", not "failed".
             checkpointCommitted(db, wal)
         } finally {
             db.close()
         }
         // Prove the file opens with the new key before the caller forgets the old one.
-        val result = quickCheckWithNewKey(path, newKey, config)
-        if (result != "ok") throw unverified("quick_check after rekey reported $result", null)
+        val result = quickCheckWithNewKey(path, newKey, config, open)
+        if (result != "ok") {
+            throw SealiteException(SealiteError.REKEY_UNVERIFIED, "quick_check after rekey reported $result")
+        }
+    }
+
+    private fun openForRekey(
+        path: String,
+        oldKey: SealiteKey,
+        config: SealiteConfig,
+        open: (String, Int, SealiteKey, SealiteConfig) -> RawDb,
+    ): RawDb = try {
+        open(path, OPEN_READWRITE, oldKey, config)
+    } catch (e: SQLiteException) {
+        throw SealiteException(SealiteError.REKEY_FAILED, "the database could not be opened; nothing was changed", e)
+    }
+
+    /**
+     * Everything up to and including the commit. Returns whether the database is in WAL mode. A
+     * SQLite failure here leaves the file under the old key and is reported as
+     * [SealiteError.REKEY_FAILED] with the original as its cause.
+     */
+    private fun rekeyUntilCommitted(db: RawDb, newKey: SealiteKey): Boolean = try {
+        // Hold an exclusive lock until close: no other connection can read pages while they
+        // change keys, and an open one makes this fail here, before anything is written.
+        db.exec("PRAGMA locking_mode = EXCLUSIVE")
+        db.exec("BEGIN EXCLUSIVE")
+        db.exec("COMMIT")
+        // WAL frames are decrypted with the connection's current key: fold them into the
+        // main file before the key changes.
+        val wal = db.queryString("PRAGMA journal_mode").equals("wal", ignoreCase = true)
+        if (wal) checkpoint(db)
+
+        val bytes = newKey.keyBytes()
+        try {
+            db.rekey(bytes)
+        } finally {
+            bytes.wipe()
+        }
+        requireCommitted(db)
+        wal
+    } catch (e: SQLiteException) {
+        throw SealiteException(
+            SealiteError.REKEY_FAILED,
+            "SQLite stopped the rekey before the commit; the file is still under the old key",
+            e,
+        )
     }
 
     /**
      * sqlite3_rekey_v2 ignores the result of its commit: a still open transaction means the pages
      * were not committed, and closing would roll them back to the old key.
      */
-    // Unreachable in a test: it needs the commit to fail (an I/O error) after the rekey succeeded.
-    @ExcludeFromCoverage
     private fun requireCommitted(db: RawDb) {
         if (db.inTransaction()) {
             runCatching { db.exec("ROLLBACK") }
@@ -178,35 +215,31 @@ public object Sealite {
         }
     }
 
-    // Unreachable in a test: the exclusive lock is held, so the checkpoint can only fail on an I/O error.
-    @ExcludeFromCoverage
     private fun checkpointCommitted(db: RawDb, wal: Boolean) {
         try {
             if (wal) checkpoint(db)
         } catch (e: SQLiteException) {
-            throw unverified("the WAL could not be checkpointed", e)
+            throw SealiteException(SealiteError.REKEY_UNVERIFIED, "the WAL could not be checkpointed", e)
         }
     }
 
-    // The failure branch is unreachable in a test: it needs an I/O error between the commit and the reopen.
-    @ExcludeFromCoverage
-    private fun quickCheckWithNewKey(path: String, newKey: SealiteKey, config: SealiteConfig): String? = try {
-        val reopened = OpenSequence.openVerified(path, OPEN_READONLY, newKey, config)
+    private fun quickCheckWithNewKey(
+        path: String,
+        newKey: SealiteKey,
+        config: SealiteConfig,
+        open: (String, Int, SealiteKey, SealiteConfig) -> RawDb,
+    ): String? = try {
+        val reopened = open(path, OPEN_READONLY, newKey, config)
         try {
             reopened.queryString("PRAGMA quick_check")
         } finally {
             reopened.close()
         }
     } catch (e: SQLiteException) {
-        throw unverified("reopening with the new key failed", e)
+        throw SealiteException(SealiteError.REKEY_UNVERIFIED, "reopening with the new key failed", e)
     } catch (e: SealiteException) {
-        throw unverified("reopening with the new key failed", e)
+        throw SealiteException(SealiteError.REKEY_UNVERIFIED, "reopening with the new key failed", e)
     }
-
-    // Only the excluded post-commit failure paths pass a cause.
-    @ExcludeFromCoverage
-    private fun unverified(reason: String, cause: Throwable?): Throwable =
-        SealiteException(SealiteError.REKEY_UNVERIFIED, reason, cause)
 
     /** [encryptPlaintext] with the default [SealiteConfig]. */
     @JvmStatic
@@ -235,9 +268,13 @@ public object Sealite {
      *
      * On the JVM and Apple platforms the publish is a hard link, which refuses an existing target
      * atomically; on a file system without hard links (FAT, some network shares) it fails with the
-     * platform's I/O exception rather than risk replacing a file. On Android, where apps may not
-     * create hard links, it is a check and a rename under a lock that every Sealite migration to the
-     * same path takes, across threads and processes (the lock file `.<name>.sealite.lock` stays).
+     * platform's I/O exception rather than risk replacing a file. Android apps may not create hard
+     * links: on API 30 and later the publish is `renameat2(RENAME_NOREPLACE)`, atomic in the kernel
+     * against anything that creates the target. Below API 30 (or on a file system without that flag)
+     * it is a check and a rename under a lock that every Sealite migration to the same path takes,
+     * across threads and processes (the lock file `.<name>.sealite.lock` stays). That guarantee holds
+     * against every other Sealite publish, not against unrelated code of the same app that writes the
+     * same path; a dangling symbolic link at the target counts as existing.
      */
     // Any failure, whatever its type, must roll back and remove the temporary file, then rethrow.
     @Suppress("ThrowsCount", "TooGenericExceptionCaught")
@@ -364,9 +401,6 @@ public object Sealite {
     private fun RawDb.text(sql: String): String = queryString(sql).orEmpty()
 
     /** `wal_checkpoint(TRUNCATE)` must fully succeed: its first column is 1 when it was blocked. */
-    // The blocked branch is unreachable in a test: the exclusive lock rekey holds keeps every other
-    // connection of a WAL database out, so nothing can block the checkpoint.
-    @ExcludeFromCoverage
     private fun checkpoint(db: RawDb) {
         val busy = db.queryString("PRAGMA wal_checkpoint(TRUNCATE)")
         if (busy != "0") {

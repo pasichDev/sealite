@@ -49,7 +49,7 @@ internal class FakeRawDb(
     override fun close() = Unit
 }
 
-private class FakeStatement(
+internal class FakeStatement(
     private val text: String?,
     private val hasRow: Boolean,
 ) : SQLiteStatement {
