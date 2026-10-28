@@ -17,6 +17,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -171,14 +172,19 @@ class RoomSealiteTest {
                             List(4) {
                                 async(Dispatchers.IO) {
                                     var last = 0
-                                    while (last < total) {
+                                    // Read until the writer is done, yielding between reads: without a
+                                    // WAL the readers and the writer share one connection, and readers
+                                    // that never yield can starve the writer forever.
+                                    while (!writer.isCompleted) {
                                         val rows = db.notes().all()
                                         // Every read sees a consistent prefix of the writes.
                                         assertTrue(rows.size >= last, "rows went backwards: ${rows.size} < $last")
                                         rows.forEachIndexed { i, row -> assertEquals("$MARKER-${i + 1}", row.body) }
                                         assertTrue(db.notes().count() >= rows.size)
                                         last = rows.size
+                                        yield()
                                     }
+                                    assertEquals(total, db.notes().all().size)
                                 }
                             }
                         (readers + writer).awaitAll()

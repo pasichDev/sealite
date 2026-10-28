@@ -6,6 +6,10 @@
 # (thread-dumps.sh) while it keeps running. The step's own timeout then ends a real hang, and the
 # dumps are already on disk to be uploaded; a hang is visible as more than a cancelled runner.
 #
+# The watchdog is a polling loop in this process, not a background `sleep`: a leftover background
+# process would keep the step's output open after the command ends, and runners that wait for the
+# output to close (android-emulator-runner does) would then hang until their timeout.
+#
 # usage: run-with-dumps.sh <outdir> <seconds> -- <command> [args...]
 set -u
 
@@ -18,15 +22,17 @@ here="$(cd "$(dirname "$0")" && pwd)"
 "$@" &
 command_pid=$!
 
-(
-  sleep "$after"
-  echo "::warning::still running after ${after}s: thread dumps of all JVMs"
-  "$here/thread-dumps.sh" "$out"
-) &
-watchdog_pid=$!
+elapsed=0
+dumped=false
+while kill -0 "$command_pid" 2> /dev/null; do
+  sleep 5
+  elapsed=$((elapsed + 5))
+  if [ "$dumped" = false ] && [ "$elapsed" -ge "$after" ] && kill -0 "$command_pid" 2> /dev/null; then
+    echo "::warning::still running after ${after}s: thread dumps of all JVMs"
+    "$here/thread-dumps.sh" "$out" || true
+    dumped=true
+  fi
+done
 
 wait "$command_pid"
-status=$?
-kill "$watchdog_pid" > /dev/null 2>&1 || true
-wait "$watchdog_pid" > /dev/null 2>&1 || true
-exit "$status"
+exit $?
