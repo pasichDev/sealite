@@ -22,21 +22,14 @@ internal actual fun createUniqueFileNextTo(path: String): String {
     return File.createTempFile(".${target.name}.sealite-", "", target.parentFile).path
 }
 
-// Target exists, target appeared before the rename fallback, rename failed: three distinct outcomes.
-@Suppress("ThrowsCount")
 internal actual fun publishWithoutReplacing(from: String, to: String) {
     try {
         Os.link(from, to)
     } catch (e: ErrnoException) {
         if (e.errno == OsConstants.EEXIST) throw IllegalStateException("$to already exists", e)
-        // A file system without hard links: refuse an existing target, then rename.
-        if (File(to).exists()) throw IllegalStateException("$to already exists", e)
-        try {
-            Os.rename(from, to)
-        } catch (renameError: ErrnoException) {
-            throw IOException("Cannot move $from to $to: ${renameError.message}", renameError)
-        }
-        return
+        // Without hard links there is no atomic publish that refuses an existing target: fail
+        // rather than risk overwriting a file that appears in the meantime.
+        throw IOException("Can not publish $to without replacing: ${e.message}", e)
     }
     deleteFileIfExists(from)
 }

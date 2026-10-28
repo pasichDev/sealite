@@ -232,6 +232,10 @@ public object Sealite {
      * @throws IllegalArgumentException if [plainPath] is missing or not a plaintext SQLite
      *   database, or [encryptedPath] or one of its sidecar files already exists.
      * @throws IllegalStateException if [encryptedPath] appeared while the copy was being built.
+     *
+     * On a file system without hard links (FAT, some network shares) it fails with the platform's
+     * I/O exception: no other publish can be guaranteed never to replace a file, so none is
+     * attempted. App-private storage on Android, APFS, NTFS and ext4 all support hard links.
      */
     // Any failure, whatever its type, must roll back and remove the temporary file, then rethrow.
     @Suppress("ThrowsCount", "TooGenericExceptionCaught")
