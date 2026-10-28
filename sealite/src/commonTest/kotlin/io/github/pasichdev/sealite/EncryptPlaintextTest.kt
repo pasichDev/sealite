@@ -266,6 +266,25 @@ class EncryptPlaintextTest {
     }
 
     @Test
+    fun aPendingWriteToThePlaintextDoesNotBlockTheMigration() {
+        val plain = newPath()
+        val encrypted = newPath()
+        writeFileBytes(plain, PLAINTEXT_DATABASE)
+        val writer = rawOpen(plain, 0x02) // READWRITE, no key
+        try {
+            // The app holds a write transaction on the plaintext file: a migration only reads it.
+            writer.exec("BEGIN IMMEDIATE")
+            writer.exec("INSERT INTO note (body) VALUES ('uncommitted')")
+            Sealite.encryptPlaintext(plain, encrypted, rawKey(1))
+            writer.exec("ROLLBACK")
+        } finally {
+            writer.close()
+        }
+        assertEquals(listOf("plain"), withDb(encrypted, rawKey(1)) { it.column("SELECT body FROM note") })
+        assertNoTemp(encrypted)
+    }
+
+    @Test
     fun aTargetCreatedBySomeoneElseMidwayIsNotOverwritten() = runTest {
         val plain = newPath()
         val encrypted = newPath()

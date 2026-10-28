@@ -304,7 +304,10 @@ public object Sealite {
                 val userVersion = db.pragmaInt("PRAGMA plaintext.user_version")
                 val applicationId = db.pragmaInt("PRAGMA plaintext.application_id")
 
-                db.exec("BEGIN IMMEDIATE")
+                // Deferred, not IMMEDIATE: IMMEDIATE reserves every attached database, so the plaintext
+                // file would be write-locked for the whole copy and a second migration from it would
+                // wait out the busy timeout. Deferred takes only a read lock on the plaintext file.
+                db.exec("BEGIN")
                 try {
                     db.exec("SELECT sqlcipher_export('main', 'plaintext')")
                     db.exec("PRAGMA main.user_version = $userVersion")
