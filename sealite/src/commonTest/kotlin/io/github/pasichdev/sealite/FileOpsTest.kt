@@ -48,7 +48,7 @@ class FileOpsTest {
         val path = newPath()
         writeFileBytes(path, byteArrayOf(1))
         // The directory holds a file, so removing the directory fails.
-        assertFails { deleteFileIfExists(path.substringBeforeLast('/')) }
+        assertFails { deleteFileIfExists(parentOf(path)) }
     }
 
     @Test
@@ -74,8 +74,8 @@ class FileOpsTest {
         val second = createUniqueFileNextTo(target).also { paths += it }
         assertNotEquals(first, second)
         assertContentEquals(ByteArray(0), readFileBytes(first))
-        assertEquals(target.substringBeforeLast('/'), first.substringBeforeLast('/'))
-        assertTrue(first.substringAfterLast('/').startsWith(".${target.substringAfterLast('/')}.sealite-"))
+        assertEquals(parentOf(target), parentOf(first))
+        assertTrue(nameOf(first).startsWith(".${nameOf(target)}.sealite-"))
     }
 
     @Test
@@ -89,3 +89,10 @@ class FileOpsTest {
         assertContentEquals(ByteArray(0), readFileHeader(path, 4))
     }
 }
+
+// Test paths use '/' on POSIX and '\\' on Windows.
+private fun separatorIndex(path: String): Int = maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+
+private fun parentOf(path: String): String = path.substring(0, separatorIndex(path))
+
+private fun nameOf(path: String): String = path.substring(separatorIndex(path) + 1)
