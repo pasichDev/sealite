@@ -33,19 +33,21 @@ timeout_s="${VALIDATION_TIMEOUT:-1200}"
 api="${CENTRAL_API:-https://central.sonatype.com/api/v1/publisher}" # CENTRAL_API: for tests against a stand-in server
 
 staging="$(cd "$STAGING_DIR" && pwd)"
+# Absolute: the checksums are checked from inside the staged repository.
+sums="$(cd "$(dirname "$SHA256SUMS_FILE")" && pwd)/$(basename "$SHA256SUMS_FILE")"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 
 # 1. exactly what was attested -------------------------------------------------------------------------
-echo "Checking the staged files against $SHA256SUMS_FILE"
+echo "Checking the staged files against $sums"
 actual="$(cd "$staging" && find . -type f ! -name '*.asc' | sed 's|^\./||' | LC_ALL=C sort)"
-recorded="$(sed 's/^[0-9a-f]*  //' "$SHA256SUMS_FILE" | LC_ALL=C sort)"
+recorded="$(sed 's/^[0-9a-f]*  //' "$sums" | LC_ALL=C sort)"
 if [ "$actual" != "$recorded" ]; then
   echo "::error::the staged repository differs from the recorded file list"
   diff <(echo "$recorded") <(echo "$actual") || true
   exit 1
 fi
-(cd "$staging" && if command -v sha256sum > /dev/null 2>&1; then sha256sum -c "$SHA256SUMS_FILE"; else shasum -a 256 -c "$SHA256SUMS_FILE"; fi) > /dev/null
+(cd "$staging" && if command -v sha256sum > /dev/null 2>&1; then sha256sum -c "$sums"; else shasum -a 256 -c "$sums"; fi) > /dev/null
 
 # 2. signatures ------------------------------------------------------------------------------------
 export GNUPGHOME
