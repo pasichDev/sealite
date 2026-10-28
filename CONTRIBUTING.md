@@ -6,7 +6,7 @@ channel described in [SECURITY](.github/SECURITY.md), not into public issues.
 
 ## Requirements
 
-- JDK 21 (the build runs on 17+; CI uses Temurin 21).
+- JDK 21 (the build runs on 17+; CI runs the JVM tests on Temurin 17, 21 and 25).
 - A **Mac** to build and test everything. The Apple targets and the Apple native libraries need
   Xcode; the macOS x64, Windows, Linux and Android libraries are cross-compiled from the Mac.
 - `tclsh` (to build the SQLCipher amalgamation), `perl` and `make` (OpenSSL), `curl`; `gpg` is
@@ -38,9 +38,20 @@ a symbol without the `sealite_` prefix.
 ./gradlew :sealite:collectNativesForCi    # every library under sealite/build/natives-out
 ```
 
-CI builds the natives once on macOS and the other jobs reuse them: pass
-`-Psealite.prebuiltNatives=<dir>` (the layout of `natives-out`: `jvm/natives/<os>_<arch>/` and
-`android/jniLibs/<abi>/`) and no native code is compiled.
+CI builds the natives once on macOS and every other job reuses them: pass
+`-Psealite.prebuiltNatives=<dir>` (the layout of `natives-out`) and no native code is compiled:
+
+```
+<dir>/jvm/natives/<os>_<arch>/       osx_arm64, osx_x64, windows_x64, linux_x64, linux_arm64 (+ .sha256)
+<dir>/android/jniLibs/<abi>/         arm64-v8a, armeabi-v7a, x86_64, x86
+<dir>/apple/<target>/libsealite.a    ios_arm64, ios_simulator_arm64, macos_arm64_static
+<dir>/apple/include/                 sqlite3.h and sealite_rename.h, as the libraries were built with
+```
+
+On a host that is not a Mac the natives can not be built (the build needs Xcode's clang and SDK) and
+the Apple targets are disabled, so there `-Psealite.prebuiltNatives` is required; without it the build
+stops with a message saying so. Take the directory from the `natives` artifact of a CI run, or from
+`./gradlew :sealite:collectNativesForCi` on a Mac.
 
 ## Tests
 
@@ -54,6 +65,9 @@ needed on Kotlin/Native.
 | JVM only | `./gradlew :sealite:jvmTest` |
 | Android | `ANDROID_SERIAL=<serial> ./gradlew :sealite:connectedAndroidDeviceTest` (an emulator or device; the variable keeps the run off other attached devices) |
 | JVM on Windows / Linux | `./gradlew :sealite:jvmTest -Psealite.prebuiltNatives=<dir>` on that OS |
+
+Each JVM test is limited to five minutes (JUnit's `timeout.default`, run on a separate thread so a
+test stuck in native code fails instead of hanging the build).
 
 A platform without passing tests is not a supported platform.
 
@@ -87,7 +101,7 @@ The Kotlin library code must stay at **100 % line and branch coverage** of the J
 ./gradlew build             # tests, 100 % coverage gate, spotlessCheck, detekt, API check, Dokka
 ```
 
-- If the public API changed on purpose, run `./gradlew :sealite:updateKotlinAbi` and commit the new
+- If the public API changed on purpose, run `./gradlew :sealite:updateLegacyAbi` and commit the new
   `sealite/api/` dump. An unexpected API diff is a bug.
 - Keys are `ByteArray` / `CharArray` only. Code that copies, holds or wipes key material (the
   `SealiteKey`, `OpenSequence` and native key files) gets extra scrutiny in review.
@@ -101,13 +115,74 @@ scope, for example `fix(native): wipe the key buffer on every path`. Use `!` or 
 footer for incompatible changes. Pull requests are squash-merged, so the PR title is what lands in
 the history and drives the version bump and the changelog; a CI check enforces its format.
 
+## Continuous integration
+
+Workflows live in `.github/workflows/`; the ones starting with `_` are reusable.
+
+```
+ci.yml  (pull requests, main)
+ |- hygiene   forbidden wording, private paths, SPDX headers
+ |- lint      Spotless (ktlint, clang-format), detekt; no natives needed
+ |- natives   _natives.yml: macOS arm64, builds every native library once, then checks them
+ |               (import allowlists, glibc ceiling, 16 KiB alignment, macOS minimum OS, checksums)
+ |   `- test  _test.yml: runs against exactly those libraries
+ |        |- apple    macOS arm64: check = macOS and iOS-simulator tests, JVM tests, 100 % Kover gate, ABI, detekt, Dokka
+ |        |- jvm      linux-x64 (JDK 17, 21; 25 on main), linux-arm64, windows-x64, macos-x64 (the only run of osx_x64)
+ |        |- android  emulators: API 24 x86, API 35 x86_64, API 35 with 16 KiB pages (AVD snapshots cached)
+ |        `- sample   the desktop and Android sample apps assemble
+ `- ci-ok     fails unless every job above succeeded
+pr-title.yml  the pull request title is a Conventional Commit
+codeql.yml    CodeQL for the C glue
+security.yml  zizmor, the linter for the workflows themselves
+scorecard.yml OpenSSF Scorecard
+release-please.yml, release.yml   see Releases
+```
+
+- **`ci-ok` is the only check branch protection needs** (plus `semantic` from `pr-title.yml`). It
+  reports on every pull request, whatever the matrix looks like.
+- To rerun, use "Re-run failed jobs" on the run. The jobs that download the natives take them from the
+  artifact of that run, so a rerun tests the same libraries. Nothing is retried automatically except the
+  boot of an Android emulator, once; a failing test is never rerun.
+- A hung test fails after five minutes. If a job hangs anyway, it prints thread dumps of every JVM
+  (including the Gradle test workers) before its step timeout, and uploads them with the test reports as
+  the `reports-*` artifacts of the run.
+- All actions are pinned by commit SHA (Dependabot keeps them current, in one grouped pull request),
+  every job asks for the least permissions it needs, and `zizmor` checks the workflows.
+
 ## Releases
 
-release-please keeps a release pull request open on `main`. Merging it bumps `version` in
-`gradle.properties`, updates `CHANGELOG.md` and creates the tag; the release workflow then builds
-all natives and publishes to Maven Central after approval of the `release` environment.
+release-please keeps a release pull request open on `main`. It runs with a token of its own
+(`RELEASE_PLEASE_TOKEN`), so CI runs on that pull request and the tag it pushes starts `release.yml`.
+Merging the release pull request bumps `version` in `gradle.properties`, updates `CHANGELOG.md` and
+tags `vX.Y.Z`; then `release.yml`:
+
+1. checks that the tag is the version in `gradle.properties` and that its commit is on `main`;
+2. builds every native library from the tag (no caches) and runs the full test matrix against them;
+3. builds the Maven repository once, into a local directory, attests the native libraries and the
+   library files (build provenance) and the SBOM, and records their checksums;
+4. checks that the repository is complete (all Apple klibs included) and that a separate consumer
+   project, resolving the library only from that directory, opens an encrypted database;
+5. after the approval of the `release` environment: signs the staged files with the release key and
+   uploads exactly those files to the Central Portal as one deployment. Central validates it, and
+   **nothing is released yet**: the owner presses Publish in the Portal;
+6. publishes the GitHub release with the changelog section, `SHA256SUMS`, the SBOM and the links to the
+   attestations. A download can be checked with `gh attestation verify <file> --repo pasichdev/sealite`.
+
+The Portal upload is a script (`.github/scripts/central-upload.sh`) and not the Gradle plugin's
+`publishToMavenCentral`, because the plugin uploads only what its own Gradle run built, and a release
+must publish the files that were tested and attested, not a rebuild of them.
 
 Never edit `CHANGELOG.md` by hand: release-please writes every version section from the commit
 history, and a hand-written section for the same version would appear twice. A curated overview of a
 release goes in `.github/release-notes/<version>.md`; the release workflow places it above the
 generated entry in the GitHub release.
+
+### Repository setup (maintainers)
+
+- Secret `RELEASE_PLEASE_TOKEN`: a fine-grained personal access token for this repository with
+  Contents, Pull requests and Workflows read and write. `release-please.yml` fails with a message
+  without it; there is no fallback to the default token.
+- Environment `release` with required reviewers, restricted to `v*` tags, holding the secrets
+  `ORG_GRADLE_PROJECT_mavenCentralUsername`, `ORG_GRADLE_PROJECT_mavenCentralPassword` (the Portal user
+  token), `ORG_GRADLE_PROJECT_signingInMemoryKey` and `ORG_GRADLE_PROJECT_signingInMemoryKeyPassword`.
+- Branch protection (or a ruleset) on `main`: require `ci-ok` and `semantic`.
