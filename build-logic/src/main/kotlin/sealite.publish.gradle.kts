@@ -4,10 +4,31 @@
 import com.vanniktech.maven.publish.JavadocJar
 import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.SourcesJar
+import org.gradle.api.publish.PublishingExtension
 
 plugins {
     id("com.vanniktech.maven.publish")
     id("org.jetbrains.dokka")
+}
+
+// The release builds the Maven repository once, into a local directory, and everything after that
+// (consumer smoke test, attestation, upload) works on exactly those files.
+// `./gradlew publishAllPublicationsToStagingRepository [-Psealite.stagingDir=<dir>]`
+extensions.configure<PublishingExtension> {
+    repositories {
+        maven {
+            name = "Staging"
+            url =
+                providers
+                    .gradleProperty("sealite.stagingDir")
+                    .map { file(it).toURI() }
+                    .orElse(
+                        rootProject.layout.buildDirectory
+                            .dir("staging-repo")
+                            .map { it.asFile.toURI() },
+                    ).get()
+        }
+    }
 }
 
 mavenPublishing {
@@ -20,7 +41,13 @@ mavenPublishing {
 
     // Central Portal; release is confirmed by hand in the portal UI.
     publishToMavenCentral()
-    signAllPublications()
+    // Signing needs a key: the release signs the staged files in its gated publish job (see
+    // .github/scripts/central-upload.sh), so a build without a key (CI staging, local checks) is unsigned.
+    if (providers.gradleProperty("signingInMemoryKey").isPresent ||
+        providers.gradleProperty("signing.keyId").isPresent
+    ) {
+        signAllPublications()
+    }
 
     coordinates("io.github.pasichdev", "sealite", project.version.toString())
 

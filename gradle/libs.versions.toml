@@ -8,13 +8,14 @@ room3 = "3.1.0-alpha03"
 androidxTest = "1.7.0"
 androidxTestExt = "1.3.0"
 coroutines = "1.11.0"
-atomicfu = "0.28.0"
+atomicfu = "0.33.0"
 vanniktechPublish = "0.37.0"
 dokka = "2.2.0"
 spotless = "8.10.4"
 ktlint = "1.8.0"
 detekt = "2.0.0-alpha.6"
 kover = "0.9.11"
+cyclonedx = "3.5.1"
 
 [libraries]
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTest" }
@@ -40,3 +41,4 @@ kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", v
 android-kmp-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+cyclonedx = { id = "org.cyclonedx.bom", version.ref = "cyclonedx" }

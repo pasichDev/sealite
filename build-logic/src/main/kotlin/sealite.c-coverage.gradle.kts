@@ -65,7 +65,7 @@ if (isMac && !prebuilt) {
             val jvmTest = tasks.named<Test>("jvmTest").get()
             testClassesDirs = jvmTest.testClassesDirs
             classpath = jvmTest.classpath
-            useJUnit()
+            useJUnitPlatform()
             filter.excludeTestsMatching("*NativeLibraryLoaderTest")
             filter.excludeTestsMatching("*LoaderEnvironmentTest")
             inputs.file(instrumentedLibrary)

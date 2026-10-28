@@ -13,6 +13,7 @@ plugins {
     id("sealite.c-coverage")
     id("sealite.asan")
     alias(libs.plugins.ksp)
+    alias(libs.plugins.cyclonedx)
 }
 
 // The golden databases of testdata/ as Kotlin constants, for the tests of every target.
@@ -62,6 +63,12 @@ dependencies {
 }
 
 tasks.withType<Test>().configureEach {
+    // JUnit Platform, so a hung test fails by itself instead of holding the runner until its job is
+    // cancelled: no single test may run longer than five minutes. SEPARATE_THREAD makes the timeout
+    // work for a test stuck in native code too (the test is reported failed and the run goes on).
+    useJUnitPlatform()
+    systemProperty("junit.jupiter.execution.timeout.default", "5m")
+    systemProperty("junit.jupiter.execution.timeout.thread.mode.default", "SEPARATE_THREAD")
     // The tests exercise the packaged-resource loading path; surface what happens.
     testLogging {
         events("passed", "skipped", "failed")
@@ -69,6 +76,13 @@ tasks.withType<Test>().configureEach {
     }
     // Native code runs in this JVM: be explicit about native access (JDK 24+ warns otherwise).
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+}
+
+// The runtime dependencies of the published artifacts. The vendored SQLCipher and OpenSSL are compiled
+// in and appear in no configuration: .github/scripts/sbom-vendored.sh adds them to the release SBOM.
+tasks.named<org.cyclonedx.gradle.CyclonedxDirectTask>("cyclonedxDirectBom") {
+    includeConfigs.set(listOf("jvmRuntimeClasspath", "androidRuntimeClasspath"))
+    includeBuildEnvironment.set(false)
 }
 
 dokka {
@@ -105,7 +119,6 @@ for ((name, variables) in loaderEnvironments) {
             val jvmTest = tasks.named<Test>("jvmTest").get()
             testClassesDirs = jvmTest.testClassesDirs
             classpath = jvmTest.classpath
-            useJUnit()
             filter.includeTestsMatching("*LoaderEnvironmentTest")
             loaderEnvironmentVariables.forEach { environment.remove(it) }
             variables.forEach { (key, value) -> environment(key, value) }
