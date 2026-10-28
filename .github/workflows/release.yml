@@ -1,114 +1,311 @@
 name: release
 
-# Runs for a tag pushed by hand, and is called by release-please.yml when a release PR is merged:
-# a tag created with the default GITHUB_TOKEN does not trigger `push` workflows, so the call is how
-# release-please releases reach this pipeline.
+# Starts when release-please pushes a tag vX.Y.Z (release-please.yml uses a token of its own, so the tag
+# push does start this workflow). Nothing is released from a branch or by hand.
+#
+#   verify-tag     the tag is the version in gradle.properties and its commit is on main
+#   natives        every native library, built once from the tag, caches off
+#   test           the full test matrix against those exact libraries
+#   stage          the Maven repository, built once into a local directory; provenance and SBOM attested
+#   verify-staged  a consumer project resolves the library only from that directory and opens an encrypted database
+#   publish        (environment: release, reviewers approve) signs the staged files and uploads them to the
+#                  Central Portal as one deployment; validation runs, release does not (the owner presses Publish)
+#   github-release notes, SHA256SUMS, SBOM and the attestation links
+#
+# The libraries that are tested are the ones in the artifact; the files that are published are the ones
+# in the staged repository; both were built once.
+
 on:
   push:
     tags: ['v*']
-  workflow_call:
-    inputs:
-      tag:
-        description: The release tag (vX.Y.Z), already created by release-please.
-        required: true
-        type: string
-    secrets:
-      ORG_GRADLE_PROJECT_mavenCentralUsername:
-        required: true
-      ORG_GRADLE_PROJECT_mavenCentralPassword:
-        required: true
-      ORG_GRADLE_PROJECT_signingInMemoryKey:
-        required: true
-      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword:
-        required: true
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   PREBUILT: ${{ github.workspace }}/prebuilt-natives
-  # The tag being released: the input when called, the pushed tag otherwise.
-  TAG: ${{ inputs.tag || github.ref_name }}
+  STAGING: ${{ github.workspace }}/maven-staging
 
 jobs:
-  natives:
-    uses: ./.github/workflows/natives.yml
-
-  publish:
-    needs: natives
-    runs-on: macos-latest # Apple klibs can only be published from macOS
-    environment: release  # required reviewers gate the publish
-    timeout-minutes: 90
+  verify-tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
-      - name: Tag must match the version and sit on main
+          persist-credentials: false
+      - name: The tag is the declared version, and its commit is on main
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#v}"
           declared="$(sed -n 's/^version=//p' gradle.properties)"
-          [ "$version" = "$declared" ] || { echo "tag $version != gradle.properties $declared"; exit 1; }
-          git merge-base --is-ancestor "$(git rev-parse HEAD)" origin/main || { echo "tag is not on main"; exit 1; }
+          [ "$version" = "$declared" ] || { echo "::error::tag $version is not the version in gradle.properties ($declared)"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::the tag's commit is not on main"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  natives:
+    needs: verify-tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_natives.yml
+    with:
+      caches: false
+      retention-days: 90
+
+  test:
+    needs: natives
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_test.yml
+    with:
+      full: true
+      caches: false
+
+  stage:
+    needs: [verify-tag, natives, test]
+    runs-on: macos-15 # the Apple klibs can only be produced on a Mac
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # sign the attestations
+      attestations: write
+    outputs:
+      provenance-url: ${{ steps.provenance.outputs.attestation-url }}
+      sbom-url: ${{ steps.sbom-attestation.outputs.attestation-url }}
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: natives
           path: ${{ env.PREBUILT }}
-      - name: Publish to Maven Central
+
+      - name: Build the Maven repository (once)
+        run: >
+          ./gradlew publishAllPublicationsToStagingRepository
+          -Psealite.prebuiltNatives="${PREBUILT}" -Psealite.stagingDir="${STAGING}"
+          --no-configuration-cache --stacktrace
+      - name: The repository is complete (all Apple klibs included)
+        run: .github/scripts/verify-staging.sh "${STAGING}" "${VERSION}"
+
+      - name: SBOM
+        run: |
+          ./gradlew :sealite:cyclonedxDirectBom --stacktrace
+          mkdir -p release-files
+          .github/scripts/sbom-vendored.sh sealite/build/reports/cyclonedx-direct/bom.json "release-files/sealite-${VERSION}.cdx.json"
+
+      - name: Checksums
+        run: |
+          mkdir -p release-files
+          # What the publish job checks the staged files against before it adds signatures.
+          (cd "${STAGING}" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | xargs shasum -a 256) > release-files/staging.sha256
+          # What readers get with the release: the native libraries, the SBOM and the library files.
+          {
+            (cd "${PREBUILT}" && find . -type f ! -name '*.sha256' | sed 's|^\./||' | LC_ALL=C sort | while read -r f; do (cd "${PREBUILT}" && shasum -a 256 "$f" | sed "s|  |  natives/|"); done)
+            (cd release-files && shasum -a 256 "sealite-${VERSION}.cdx.json")
+            (cd "${STAGING}" && find . -type f \( -name '*.jar' -o -name '*.aar' -o -name '*.klib' -o -name '*.pom' -o -name '*.module' \) | sed 's|^\./||' | LC_ALL=C sort | while read -r f; do shasum -a 256 "$f" | sed "s|  |  maven/|"; done)
+          } > release-files/SHA256SUMS
+
+      - name: Attest the provenance of the native libraries and the library files
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ env.PREBUILT }}/jvm/natives/*/*.so
+            ${{ env.PREBUILT }}/jvm/natives/*/*.dll
+            ${{ env.PREBUILT }}/jvm/natives/*/*.dylib
+            ${{ env.PREBUILT }}/android/jniLibs/*/*.so
+            ${{ env.PREBUILT }}/apple/*/libsealite.a
+            ${{ env.STAGING }}/io/github/pasichdev/*/*/*.jar
+            ${{ env.STAGING }}/io/github/pasichdev/*/*/*.aar
+            ${{ env.STAGING }}/io/github/pasichdev/*/*/*.klib
+            ${{ env.STAGING }}/io/github/pasichdev/*/*/*.pom
+            ${{ env.STAGING }}/io/github/pasichdev/*/*/*.module
+      - name: Attest the SBOM
+        id: sbom-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ env.STAGING }}/io/github/pasichdev/sealite-jvm/${{ env.VERSION }}/sealite-jvm-${{ env.VERSION }}.jar
+            ${{ env.STAGING }}/io/github/pasichdev/sealite-android/${{ env.VERSION }}/sealite-android-${{ env.VERSION }}.aar
+          sbom-path: release-files/sealite-${{ env.VERSION }}.cdx.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: maven-staging
+          path: ${{ env.STAGING }}
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: release-files
+          if-no-files-found: error
+          retention-days: 90
+
+  # A consumer that knows nothing of this repository: it resolves io.github.pasichdev:sealite from the
+  # staged directory alone (every other dependency comes from Maven Central and Google).
+  verify-staged:
+    name: verify-staged (${{ matrix.os }})
+    needs: [verify-tag, stage]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: maven-staging
+          path: ${{ env.STAGING }}
+      - name: Resolve the released version from the staged repository and open an encrypted database
+        run: >
+          ./gradlew -p .github/consumer-smoke test
+          -Psealite.staging="${STAGING}" -Psealite.version="${VERSION}"
+          -Pkotlin.version="$(sed -n 's/^kotlin = "\(.*\)"/\1/p' gradle/libs.versions.toml)"
+          --stacktrace
+
+  publish:
+    needs: [verify-tag, stage, verify-staged]
+    runs-on: ubuntu-24.04
+    environment: release # required reviewers approve; the signing key and the Portal token live here
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: maven-staging
+          path: ${{ env.STAGING }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release-files
+      - name: Sign the staged files and upload them to the Central Portal
         env:
-          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.ORG_GRADLE_PROJECT_mavenCentralUsername }}
-          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.ORG_GRADLE_PROJECT_mavenCentralPassword }}
-          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.ORG_GRADLE_PROJECT_signingInMemoryKey }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.ORG_GRADLE_PROJECT_signingInMemoryKeyPassword }}
-        run: ./gradlew publishToMavenCentral -Psealite.prebuiltNatives="${PREBUILT}" --no-configuration-cache --stacktrace
+          STAGING_DIR: ${{ env.STAGING }}
+          SHA256SUMS_FILE: release-files/staging.sha256
+          CENTRAL_USERNAME: ${{ secrets.ORG_GRADLE_PROJECT_mavenCentralUsername }}
+          CENTRAL_PASSWORD: ${{ secrets.ORG_GRADLE_PROJECT_mavenCentralPassword }}
+          SIGNING_KEY: ${{ secrets.ORG_GRADLE_PROJECT_signingInMemoryKey }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ORG_GRADLE_PROJECT_signingInMemoryKeyPassword }}
+        run: .github/scripts/central-upload.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: central-bundle
+          path: central-bundle/bundle.zip
+          retention-days: 30
 
   github-release:
-    needs: publish
-    runs-on: ubuntu-latest
+    needs: [verify-tag, stage, publish]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.verify-tag.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      PROVENANCE_URL: ${{ needs.stage.outputs.provenance-url }}
+      SBOM_URL: ${{ needs.stage.outputs.sbom-url }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: natives
-          path: ${{ env.PREBUILT }}
-      - name: Changelog section and native checksums
+          name: release-files
+          path: release-files
+      - name: Release notes
         run: |
-          version="${TAG#v}"
-          awk -v v="$version" '
+          awk -v v="$VERSION" '
             /^## / { if (found) exit; if (index($0, "[" v "]") || index($0, " " v)) { found=1; next } }
             found { print }
           ' CHANGELOG.md > release-notes.md
-          [ -s release-notes.md ] || { echo "no CHANGELOG.md section for $version"; exit 1; }
+          [ -s release-notes.md ] || { echo "::error::no CHANGELOG.md section for $VERSION"; exit 1; }
           # The hand-written overview of the release, if there is one, goes above the generated entry.
           : > highlights.md
-          if [ -f ".github/release-notes/${version}.md" ]; then
-            { cat ".github/release-notes/${version}.md"; echo; } > highlights.md
+          if [ -f ".github/release-notes/${VERSION}.md" ]; then
+            { cat ".github/release-notes/${VERSION}.md"; echo; } > highlights.md
           fi
-          {
-            echo
-            echo '### SHA-256 of the native libraries'
-            echo '```'
-            (cd "${PREBUILT}" && find . -type f \( -name '*.so' -o -name '*.dll' -o -name '*.dylib' \) -print0 | sort -z | xargs -0 sha256sum)
-            echo '```'
-          } >> release-notes.md
-      - name: Create the GitHub release, or add the checksums to the one release-please created
-        env:
-          GH_TOKEN: ${{ github.token }}
+          cat >> release-notes.md << EOF
+
+          ### Verify what you download
+
+          Every native library and every file of the library is attested (build provenance), and the SBOM is attested too:
+
+          - provenance: ${PROVENANCE_URL}
+          - SBOM: ${SBOM_URL}
+
+          \`\`\`
+          gh attestation verify <file> --repo ${GITHUB_REPOSITORY}
+          sha256sum --check --ignore-missing SHA256SUMS
+          \`\`\`
+
+          \`SHA256SUMS\` lists the native libraries (\`natives/\`), the SBOM and the Maven files (\`maven/\`).
+          EOF
+      - name: Create the GitHub release, or complete the one release-please created
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
-            { cat highlights.md; gh release view "$TAG" --json body --jq .body; sed -n '/^### SHA-256 of the native libraries/,$p' release-notes.md; } > combined-notes.md
+            { cat highlights.md; gh release view "$TAG" --json body --jq .body; sed -n '/^### Verify what you download/,$p' release-notes.md; } > combined-notes.md
             gh release edit "$TAG" --notes-file combined-notes.md
           else
             cat highlights.md release-notes.md > combined-notes.md
             gh release create "$TAG" --title "$TAG" --notes-file combined-notes.md --verify-tag
           fi
+          gh release upload "$TAG" release-files/SHA256SUMS "release-files/sealite-${VERSION}.cdx.json" --clobber
