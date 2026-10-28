@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/pasichDev/sealite/compare/v1.0.0...v1.0.1) (2026-10-28)
+
+
+### Fixed
+
+* encryptPlaintext only read-locks the plaintext database ([#8](https://github.com/pasichDev/sealite/issues/8)) ([8fca122](https://github.com/pasichDev/sealite/commit/8fca122dc01bdc8ca3b00a37ff64727731ea4d99))
+
 ## 1.0.0 (2026-10-28)
 
 First stable release. See the [release notes](https://github.com/pasichDev/sealite/releases/tag/v1.0.0)
