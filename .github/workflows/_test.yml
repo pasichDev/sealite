@@ -1,0 +1,333 @@
+name: test
+
+# Reusable. Runs every test suite on the platform it targets, against the natives built by _natives.yml
+# (artifact "natives", passed with -Psealite.prebuiltNatives). No test job compiles C.
+
+on:
+  workflow_call:
+    inputs:
+      full:
+        description: Also run the JDK 25 row. On for main and releases.
+        type: boolean
+        default: false
+      caches:
+        description: Use and write the Gradle and AVD caches. Off for releases.
+        type: boolean
+        default: true
+
+permissions: {}
+
+env:
+  PREBUILT: ${{ github.workspace }}/prebuilt-natives
+
+jobs:
+  # ---- apple: the checks that need a Mac -------------------------------------------------------
+  apple:
+    name: apple (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: ${{ !inputs.caches }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      # check = macosArm64Test, iosSimulatorArm64Test, jvmTest (osx_arm64), the 100 % Kover gate, the
+      # loader-environment runs, the ABI dump check (JVM and the Apple klibs), detekt and Dokka.
+      - name: Tests and checks
+        timeout-minutes: 45
+        run: >
+          .github/scripts/run-with-dumps.sh "${RUNNER_TEMP}/dumps" 2400 --
+          ./gradlew :sealite:check :sealite:checkLegacyAbi -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
+      - name: Thread dumps after a failure
+        if: failure()
+        run: .github/scripts/thread-dumps.sh "${RUNNER_TEMP}/dumps"
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-apple
+          path: |
+            sealite/build/reports/tests
+            sealite/build/reports/kover
+            sealite/build/test-results
+            ${{ runner.temp }}/dumps
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---- jvm: every desktop platform ---------------------------------------------------------------
+  # The matrix is computed: the JDK 25 row runs for main and releases only.
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      jvm: ${{ steps.matrix.outputs.jvm }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - id: matrix
+        env:
+          FULL: ${{ inputs.full }}
+        run: |
+          rows='[
+            {"name": "linux-x64 jdk17", "os": "ubuntu-24.04", "jdk": 17},
+            {"name": "linux-x64 jdk21", "os": "ubuntu-24.04", "jdk": 21},
+            {"name": "linux-arm64", "os": "ubuntu-24.04-arm", "jdk": 21},
+            {"name": "windows-x64", "os": "windows-2025", "jdk": 21},
+            {"name": "macos-x64", "os": "macos-15-intel", "jdk": 21}
+          ]'
+          if [ "$FULL" = "true" ]; then
+            rows="$(echo "$rows" | jq -c '. + [{"name": "linux-x64 jdk25", "os": "ubuntu-24.04", "jdk": 25}]')"
+          else
+            rows="$(echo "$rows" | jq -c .)"
+          fi
+          echo "jvm=$rows" >> "$GITHUB_OUTPUT"
+
+  jvm:
+    name: jvm (${{ matrix.name }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      # macos-x64 is the only runner that executes the osx_x64 library.
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.jvm) }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Gradle itself runs on the JDK under test (the library targets JDK 17 and later).
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: ${{ !inputs.caches }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: JVM tests against the prebuilt natives
+        timeout-minutes: 28
+        run: >
+          .github/scripts/run-with-dumps.sh "${RUNNER_TEMP}/dumps" 1500 --
+          ./gradlew :sealite:jvmTest -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
+      - name: Thread dumps after a failure
+        if: failure()
+        run: .github/scripts/thread-dumps.sh "${RUNNER_TEMP}/dumps"
+      - name: Upload reports and dumps
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-jvm-${{ matrix.name }}
+          path: |
+            sealite/build/reports/tests
+            sealite/build/test-results
+            ${{ runner.temp }}/dumps
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---- android: instrumented tests on emulators ---------------------------------------------------
+  android:
+    name: android (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # minSdk, 32-bit x86
+          - { name: API 24 x86, api: 24, arch: x86, target: default }
+          # a current device image
+          - { name: API 35 x86_64, api: 35, arch: x86_64, target: aosp_atd }
+          # 16 KiB memory pages (Android 15+): the only run-time check of the 16 KiB alignment
+          - { name: API 35 x86_64 16 KiB pages, api: 35, arch: x86_64, target: google_apis_ps16k }
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: ${{ !inputs.caches }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # AVD snapshot: created once per image (main writes the cache), so later runs boot in seconds.
+      - name: Restore the AVD
+        if: inputs.caches
+        id: avd
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api }}-${{ matrix.arch }}-${{ matrix.target }}-v1
+
+      # Booting an emulator is the flaky part of this job. The two boot attempts below are the only
+      # retries in the workflow; the test run itself is never repeated.
+      - name: Create the AVD and its snapshot (attempt 1)
+        if: inputs.caches && steps.avd.outputs.cache-hit != 'true'
+        id: snapshot1
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: ${{ matrix.target }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD and snapshot created"
+      - name: Create the AVD and its snapshot (attempt 2)
+        if: inputs.caches && steps.avd.outputs.cache-hit != 'true' && steps.snapshot1.outcome == 'failure'
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: ${{ matrix.target }}
+          force-avd-creation: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD and snapshot created"
+      - name: Save the AVD
+        if: inputs.caches && github.ref == 'refs/heads/main' && steps.avd.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: ${{ steps.avd.outputs.cache-primary-key }}
+
+
+      # The script marks the moment the emulator is up and Gradle starts; an attempt that fails before
+      # that is a boot failure and is repeated once, one that fails after it is a test failure and is not.
+      - name: Device tests
+        id: device1
+        continue-on-error: true
+        timeout-minutes: 30
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: ${{ matrix.target }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot-save -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash .github/scripts/android-device-tests.sh
+      - name: Did Gradle start?
+        id: started
+        if: always()
+        run: |
+          if [ -e "${RUNNER_TEMP}/android-tests-started" ]; then echo "value=true" >> "$GITHUB_OUTPUT"; else echo "value=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Device tests (second boot attempt)
+        id: device2
+        if: steps.device1.outcome == 'failure' && steps.started.outputs.value == 'false'
+        continue-on-error: true
+        timeout-minutes: 30
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: ${{ matrix.target }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash .github/scripts/android-device-tests.sh
+      - name: Result of the device tests
+        if: always()
+        env:
+          FIRST: ${{ steps.device1.outcome }}
+          SECOND: ${{ steps.device2.outcome }}
+        run: |
+          if [ "${FIRST}" = success ] || [ "${SECOND}" = success ]; then exit 0; fi
+          echo "::error::the device tests failed"
+          exit 1
+      - name: Thread dumps after a failure
+        if: failure()
+        run: .github/scripts/thread-dumps.sh "${RUNNER_TEMP}/dumps"
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-android-${{ matrix.api }}-${{ matrix.arch }}-${{ matrix.target }}
+          path: |
+            sealite/build/reports/androidTests
+            sealite/build/outputs/androidTest-results
+            ${{ runner.temp }}/dumps
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---- sample: the desktop and Android apps still build against the library ----------------------
+  sample:
+    name: sample (desktop + android)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: ${{ !inputs.caches }}
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: Assemble the sample (desktop and Android) to catch API breaks
+        working-directory: sample
+        run: ../gradlew assemble -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace

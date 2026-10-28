@@ -1,131 +1,37 @@
 name: ci
 
+# The pipeline for pull requests and for main. This file only wires the reusable workflows together:
+#   _natives.yml  builds every native library once and checks them
+#   _test.yml     runs every test suite on its platform against exactly those libraries
+# `ci-ok` is the one check branch protection requires.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
+# A new push cancels the older run of the same pull request. Runs on main are never cancelled: a
+# release is cut from a commit that must have been tested in full.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  PREBUILT: ${{ github.workspace }}/prebuilt-natives
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  natives:
-    uses: ./.github/workflows/natives.yml
-
-  jvm:
-    name: jvm (${{ matrix.name }})
-    needs: natives
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: bash
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: linux-x64, os: ubuntu-latest }
-          - { name: linux-arm64, os: ubuntu-24.04-arm }
-          - { name: windows-x64, os: windows-latest }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: natives
-          path: ${{ env.PREBUILT }}
-      - name: JVM tests against the prebuilt natives
-        run: ./gradlew :sealite:jvmTest -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
-
-  android:
-    name: android (API ${{ matrix.api }} ${{ matrix.arch }})
-    needs: natives
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { api: 34, arch: x86_64 }
-          - { api: 24, arch: x86 }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: natives
-          path: ${{ env.PREBUILT }}
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Device tests
-        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
-        with:
-          api-level: ${{ matrix.api }}
-          arch: ${{ matrix.arch }}
-          target: default
-          disable-animations: true
-          script: ./gradlew :sealite:connectedAndroidDeviceTest -Psealite.prebuiltNatives=${{ env.PREBUILT }} --stacktrace
-
-  sample:
-    needs: natives
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: natives
-          path: ${{ env.PREBUILT }}
-      - name: Assemble the sample (desktop + android) to catch API breaks
-        working-directory: sample
-        run: ../gradlew assemble -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
-
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-      - name: Install clang-format (the version Spotless pins)
-        run: pipx install clang-format==22.1.8
-      - name: Spotless (ktlint for Kotlin and Gradle scripts, clang-format for the C glue)
-        run: ./gradlew spotlessCheck -Psealite.requireClangFormat --stacktrace
-      - name: detekt
-        run: ./gradlew :sealite:detekt --stacktrace
-
   hygiene:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: No forbidden wording in tracked files
         run: |
           # The pattern is assembled from pieces so this file does not match itself.
@@ -148,3 +54,69 @@ jobs:
           if [ -n "$missing" ]; then
             echo "Missing '// SPDX-License-Identifier: Apache-2.0' in:"; echo "$missing"; exit 1
           fi
+
+  # Formatting and static analysis need no native library, so they start at once and report in minutes.
+  # detekt only resolves the JVM resources directory: an empty prebuilt layout is enough for that.
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - name: Install clang-format (the version Spotless pins)
+        run: pipx install clang-format==22.1.8
+      - name: Spotless (ktlint for Kotlin and Gradle scripts, clang-format for the C glue)
+        run: ./gradlew spotlessCheck -Psealite.requireClangFormat --stacktrace
+      - name: detekt
+        run: |
+          mkdir -p "${RUNNER_TEMP}/no-natives/jvm/natives"
+          ./gradlew :sealite:detekt -Psealite.prebuiltNatives="${RUNNER_TEMP}/no-natives" --stacktrace
+
+  natives:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_natives.yml
+    with:
+      caches: true
+
+  test:
+    needs: natives
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_test.yml
+    with:
+      # The JDK 25 row runs on main only.
+      full: ${{ github.event_name == 'push' }}
+      caches: true
+
+  # The single required check. It fails unless every job it needs succeeded, so a renamed matrix
+  # row can never silently drop out of branch protection.
+  ci-ok:
+    if: always()
+    needs: [hygiene, lint, natives, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq 'map_values(.result)'
+          echo "$NEEDS" | jq -e 'to_entries | all(.value.result == "success")' > /dev/null
