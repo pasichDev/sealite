@@ -1,10 +1,35 @@
 version: 2
+
+# Pull request titles are Conventional Commits (the pr-title check and release-please read them):
+# `build(deps): ...`. Updates are grouped, so a week of updates is a few pull requests and not a dozen,
+# and the few macOS CI slots are not queued behind a pile of Dependabot runs.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      actions:
+        patterns: ['*']
+
   - package-ecosystem: gradle
-    directories: ["/", "/build-logic", "/sample"]
+    directories: ['/', '/build-logic', '/sample']
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      # The root and the sample each have a wrapper: one pull request updates both.
+      gradle-wrapper:
+        patterns: ['gradle-wrapper']
+      gradle-dependencies:
+        patterns: ['*']
+        exclude-patterns: ['gradle-wrapper']
