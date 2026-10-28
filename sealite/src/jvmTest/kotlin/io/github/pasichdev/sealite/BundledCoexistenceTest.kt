@@ -4,6 +4,7 @@
 package io.github.pasichdev.sealite
 
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,6 +26,9 @@ class BundledCoexistenceTest {
 
     @Test
     fun aPlainBundledDatabaseAndAnEncryptedOneWorkInTheSameJvm() {
+        // androidx.sqlite:sqlite-bundled ships no library for Intel macOS (Sealite does).
+        val intelMac = System.getProperty("os.name").startsWith("Mac") && System.getProperty("os.arch") == "x86_64"
+        assumeTrue(!intelMac, "sqlite-bundled has no osx_x64 native library")
         val plainPath = newTempDatabasePath().also { paths += it }
         val sealedPath = newTempDatabasePath().also { paths += it }
 
