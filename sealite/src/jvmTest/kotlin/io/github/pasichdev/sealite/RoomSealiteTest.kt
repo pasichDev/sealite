@@ -11,6 +11,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.useWriterConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -161,6 +162,26 @@ class RoomSealiteTest {
             val db = build(path, driver, journalMode)
             try {
                 runBlocking {
+                    // Room sets the journal mode only on the first connection it opens; the other one stays
+                    // in SQLite's default DELETE mode. Opening the writer first keeps the writes in the
+                    // mode under test (a DELETE-mode writer fails on Windows while readers probe the journal).
+                    val writerMode =
+                        db.useWriterConnection { t ->
+                            t.usePrepared("PRAGMA journal_mode") {
+                                it.step()
+                                it.getText(0)
+                            }
+                        }
+                    assertEquals(
+                        if (journalMode ==
+                            RoomDatabase.JournalMode.TRUNCATE
+                        ) {
+                            "truncate"
+                        } else {
+                            "wal"
+                        },
+                        writerMode,
+                    )
                     coroutineScope {
                         val writer =
                             async(Dispatchers.IO) {
