@@ -10,7 +10,9 @@ name: release
 #   verify-staged  a consumer project resolves the library only from that directory and opens an encrypted database
 #   publish        (environment: release, reviewers approve) signs the staged files and uploads them to the
 #                  Central Portal as one deployment; validation runs, release does not (the owner presses Publish)
-#   github-release notes, SHA256SUMS, SBOM and the attestation links
+#   github-release notes, SHA256SUMS, SBOM and the attestation links; the release is a draft (release-please
+#                  creates it as one) until the very last step here, which publishes it
+#   docs           the API documentation (Dokka) on GitHub Pages, after the release is published
 #
 # The libraries that are tested are the ones in the artifact; the files that are published are the ones
 # in the staged repository; both were built once.
@@ -299,13 +301,59 @@ jobs:
 
           \`SHA256SUMS\` lists the native libraries (\`natives/\`), the SBOM and the Maven files (\`maven/\`).
           EOF
-      - name: Create the GitHub release, or complete the one release-please created
+      # release-please creates the release as a draft (and pushes the tag, which starts this workflow). A draft
+      # is invisible to `gh release view` on some versions, so ask the API, which lists drafts too.
+      - name: Create the GitHub release as a draft, or complete the one release-please created
         run: |
-          if gh release view "$TAG" > /dev/null 2>&1; then
+          tags="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[].tag_name')"
+          if grep -Fxq "$TAG" <<< "$tags"; then
             { cat highlights.md; gh release view "$TAG" --json body --jq .body; sed -n '/^### Verify what you download/,$p' release-notes.md; } > combined-notes.md
             gh release edit "$TAG" --notes-file combined-notes.md
           else
             cat highlights.md release-notes.md > combined-notes.md
-            gh release create "$TAG" --title "$TAG" --notes-file combined-notes.md --verify-tag
+            gh release create "$TAG" --draft --title "$TAG" --notes-file combined-notes.md --verify-tag
           fi
           gh release upload "$TAG" release-files/SHA256SUMS "release-files/sealite-${VERSION}.cdx.json" --clobber
+      # Last step: only here, with everything uploaded and the Central upload validated, the release becomes
+      # visible. Any failure above leaves a draft.
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --latest
+
+  # The API documentation of the released version. Needs Pages enabled with the source "GitHub Actions".
+  docs:
+    needs: [verify-tag, natives, github-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pages: write # deploy to GitHub Pages
+      id-token: write # prove the deployment comes from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ env.PREBUILT }}
+      - name: Build the API documentation
+        run: ./gradlew :sealite:dokkaGeneratePublicationHtml -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: sealite/build/dokka/html
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

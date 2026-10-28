@@ -165,8 +165,14 @@ tags `vX.Y.Z`; then `release.yml`:
 5. after the approval of the `release` environment: signs the staged files with the release key and
    uploads exactly those files to the Central Portal as one deployment. Central validates it, and
    **nothing is released yet**: the owner presses Publish in the Portal;
-6. publishes the GitHub release with the changelog section, `SHA256SUMS`, the SBOM and the links to the
-   attestations. A download can be checked with `gh attestation verify <file> --repo pasichdev/sealite`.
+6. completes the GitHub release with the changelog section, `SHA256SUMS`, the SBOM and the links to the
+   attestations, and only then publishes it. release-please creates the release as a draft
+   (`"draft": true`) and pushes the tag right away (`"force-tag-creation": true`, because GitHub does
+   not create the tag of a draft), so the release is invisible until every step above succeeded; a
+   failed run leaves a draft. A download can be checked with
+   `gh attestation verify <file> --repo pasichdev/sealite`;
+7. builds the API documentation (`./gradlew :sealite:dokkaGeneratePublicationHtml`) and deploys it to
+   GitHub Pages, <https://pasichdev.github.io/sealite/>, once the release is published.
 
 The Portal upload is a script (`.github/scripts/central-upload.sh`) and not the Gradle plugin's
 `publishToMavenCentral`, because the plugin uploads only what its own Gradle run built, and a release
@@ -185,4 +191,7 @@ generated entry in the GitHub release.
 - Environment `release` with required reviewers, restricted to `v*` tags, holding the secrets
   `ORG_GRADLE_PROJECT_mavenCentralUsername`, `ORG_GRADLE_PROJECT_mavenCentralPassword` (the Portal user
   token), `ORG_GRADLE_PROJECT_signingInMemoryKey` and `ORG_GRADLE_PROJECT_signingInMemoryKeyPassword`.
+- GitHub Pages enabled with the source "GitHub Actions" (Settings, Pages), and the site URL
+  `https://pasichdev.github.io/sealite/` as the repository website. The `docs` job deploys through the
+  `github-pages` environment; if that environment restricts branches or tags, allow `v*` tags.
 - Branch protection (or a ruleset) on `main`: require `ci-ok` and `semantic`.
