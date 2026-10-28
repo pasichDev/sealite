@@ -35,9 +35,10 @@ can not be wiped. Pick a [io.github.pasichdev.sealite.SealiteKey.Companion.raw] 
 application owns the key; a [io.github.pasichdev.sealite.SealiteKey.Companion.passphrase] key runs
 PBKDF2 (256 000 iterations by default) on every connection open.
 
-Never enable Room's `allowDataLossOnRecovery(true)` together with Sealite: a wrong key looks
-exactly like a corrupt file, and Room would delete the database. A damaged encrypted file reports
-the same error as a wrong key, so a failed open is never a reason to delete the database.
+A wrong key is reported as [io.github.pasichdev.sealite.SealiteException], not as
+`androidx.sqlite.SQLiteException`, so Room's corruption recovery (`allowDataLossOnRecovery`) never
+deletes an encrypted database because of it. A damaged encrypted file reports the same error as a
+wrong key, so never delete the database yourself on `WRONG_KEY`.
 
 ## Configuration and errors
 
@@ -46,10 +47,12 @@ A [io.github.pasichdev.sealite.SealiteConfig] is built with a builder (`SealiteC
 (`SealiteConfig.DEFAULT`). It must describe the file; otherwise the open fails like a wrong key.
 SQLCipher's memory sanitization (`cipher_memory_security`) is always on.
 
-Failures are `SQLiteException`s; read the reason with [io.github.pasichdev.sealite.Sealite.errorOf],
-which also looks through the causes Room wraps them in, and never parse messages. The result is a
-[io.github.pasichdev.sealite.SealiteError] (`WRONG_KEY`, `NOT_ENCRYPTED`, `NOT_KEYED`,
-`PROVIDER_MISSING`, `REKEY_FAILED`, `REKEY_UNVERIFIED`) or `null` for any other failure.
+Sealite's refusals are [io.github.pasichdev.sealite.SealiteException]s; read the reason with
+[io.github.pasichdev.sealite.Sealite.errorOf], which also looks through the causes Room wraps them
+in, and never parse messages. The result is a [io.github.pasichdev.sealite.SealiteError]
+(`WRONG_KEY`, `NOT_ENCRYPTED`, `NOT_KEYED`, `PROVIDER_MISSING`, `REKEY_FAILED`, `REKEY_UNVERIFIED`)
+or `null` for any other failure. Plain SQLite failures (I/O, constraints, a damaged page under the
+right key) stay `androidx.sqlite.SQLiteException`.
 
 ## Maintenance
 

@@ -1,0 +1,43 @@
+name: security
+
+# Static analysis of the workflows themselves (zizmor). Findings go to code scanning on main and on the
+# weekly run; on pull requests (where a fork or Dependabot token can not upload) the job just fails on
+# findings. OpenSSF Scorecard has its own file: its published results restrict what a workflow may contain.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/**'
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions: {}
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF report (not used on pull requests)
+      actions: read
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          advanced-security: ${{ github.event_name != 'pull_request' }}
+          min-severity: low

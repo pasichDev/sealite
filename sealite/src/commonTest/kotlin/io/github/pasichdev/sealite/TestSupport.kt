@@ -41,6 +41,6 @@ internal fun <T> withDb(
 internal fun openError(path: String, key: SealiteKey): SealiteError? = try {
     withDb(path, key) {}
     null
-} catch (e: androidx.sqlite.SQLiteException) {
-    Sealite.errorOf(e)
+} catch (e: SealiteException) {
+    e.error
 }

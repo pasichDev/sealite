@@ -1,0 +1,7 @@
+# zizmor configuration (https://docs.zizmor.sh/configuration/).
+rules:
+  # A style suggestion (help level): `uses: $/...` for local reusable workflows. The `./...` form
+  # is the documented, widely supported one and is what actionlint validates; revisit once the new
+  # syntax is supported by the tooling this repository uses.
+  self-repository:
+    disable: true

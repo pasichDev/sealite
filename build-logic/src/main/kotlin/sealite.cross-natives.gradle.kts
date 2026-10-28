@@ -5,7 +5,7 @@
 // Android libraries (static OpenSSL) and wires every native library into the module:
 //  - JVM resources `natives/<os>_<arch>/` (library + .sha256) through `packageJvmNatives`;
 //  - Android `jniLibs/<abi>/libsealite_jni.so` (only the .so) through `packageAndroidJniLibs`;
-//  - `collectNativesForCi`, the layout natives.yml uploads and `-Psealite.prebuiltNatives` reads.
+//  - `collectNativesForCi`, the layout _natives.yml uploads and `-Psealite.prebuiltNatives` reads.
 // With -Psealite.prebuiltNatives=<dir> nothing is compiled: the libraries come from <dir>.
 
 import com.android.build.api.variant.KotlinMultiplatformAndroidComponentsExtension
@@ -77,12 +77,15 @@ extensions.getByType<KotlinMultiplatformAndroidComponentsExtension>().onVariants
     variant.sources.jniLibs?.addGeneratedSourceDirectory(packageAndroidJniLibs, PackageJniLibsTask::outputDir)
 }
 
-// What natives.yml uploads, and what -Psealite.prebuiltNatives=<dir> reads back.
+// What _natives.yml uploads, and what -Psealite.prebuiltNatives=<dir> reads back.
 tasks.register<Sync>("collectNativesForCi") {
     group = "native"
-    description = "Collects every native library under build/natives-out/{jvm/natives,android/jniLibs}."
+    description = "Collects every native library under build/natives-out/{jvm/natives,android/jniLibs,apple}."
     into(layout.buildDirectory.dir("natives-out"))
     into("jvm/natives") { from(tasks.named<Sync>("packageJvmNatives").map { it.destinationDir.resolve("natives") }) }
     into("android/jniLibs") { from(packageAndroidJniLibs.flatMap { it.outputDir }) }
-    dependsOn("packageJvmNatives", packageAndroidJniLibs)
+    // Apple static libraries and their headers: built on a Mac only, so the Apple-targets tests and
+    // the published klibs use the very files that were verified here.
+    into("apple") { from(tasks.named<Sync>("stageAppleForCi").map { it.destinationDir }) }
+    dependsOn("packageJvmNatives", packageAndroidJniLibs, "stageAppleForCi")
 }

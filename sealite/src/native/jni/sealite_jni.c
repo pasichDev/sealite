@@ -29,15 +29,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __ANDROID__
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "sealite_key.h"
 #include "sqlite3.h"
 
 /*
- * Throws SQLiteException with the given error code and message.
+ * Throws SQLiteException("Error code: <code>, message: <message>") from a UTF-16 message. The message
+ * is built as a java.lang.String (NewString), never as UTF-8: JNI expects *modified* UTF-8 there, which
+ * HotSpot decodes wrongly for characters outside the BMP (an emoji in a table name, say).
  *
  * @return 1 if the exception was thrown, otherwise 0.
  */
-static int throwSQLiteException(JNIEnv *env, int errorCode, const char *errorMsg) {
+static int throwSQLiteException16(JNIEnv *env, int errorCode, const jchar *message, size_t messageLength) {
     jclass exceptionClass = (*env)->FindClass(env, "androidx/sqlite/SQLiteException");
     if (exceptionClass == NULL) {
         /* If androidx's exception isn't found we are likely in Android's native where the
@@ -47,23 +56,55 @@ static int throwSQLiteException(JNIEnv *env, int errorCode, const char *errorMsg
         exceptionClass = (*env)->FindClass(env, "android/database/SQLException");
         if (exceptionClass == NULL) return 0;
     }
-    int codeLength = snprintf(NULL, 0, "%d", errorCode);
-    size_t prefixLength = strlen("Error code: ");
-    size_t msgLength = 0;
-    if (errorMsg != NULL) {
-        msgLength = strlen(", message: ") + strlen(errorMsg);
+    jmethodID constructor = (*env)->GetMethodID(env, exceptionClass, "<init>", "(Ljava/lang/String;)V");
+    if (constructor == NULL) return 0;
+    char prefix[64];
+    int prefixLength = snprintf(prefix, sizeof prefix, "Error code: %d", errorCode);
+    static const char kSeparator[] = ", message: ";
+    size_t separatorLength = message != NULL ? sizeof kSeparator - 1 : 0;
+    size_t total = (size_t) prefixLength + separatorLength + (message != NULL ? messageLength : 0);
+    if (total > (size_t) INT_MAX) return 0;
+    jchar *units = (jchar *) malloc(total * sizeof(jchar) + sizeof(jchar));
+    if (units == NULL) return 0;
+    size_t at = 0;
+    for (int i = 0; i < prefixLength; i++)
+        units[at++] = (jchar) prefix[i];
+    for (size_t i = 0; i < separatorLength; i++)
+        units[at++] = (jchar) kSeparator[i];
+    if (message != NULL && messageLength > 0) {
+        memcpy(units + at, message, messageLength * sizeof(jchar));
+        at += messageLength;
     }
-    size_t totalSize = prefixLength + (size_t) codeLength + msgLength + 1;
-    char *message = (char *) malloc(totalSize);
-    if (message == NULL) return 0;
-    if (errorMsg != NULL) {
-        snprintf(message, totalSize, "Error code: %d, message: %s", errorCode, errorMsg);
-    } else {
-        snprintf(message, totalSize, "Error code: %d", errorCode);
+    jstring text = (*env)->NewString(env, units, (jsize) at);
+    free(units);
+    if (text == NULL) return 0;
+    jobject exception = (*env)->NewObject(env, exceptionClass, constructor, text);
+    if (exception == NULL) return 0;
+    return (*env)->Throw(env, (jthrowable) exception) == 0;
+}
+
+/* Throws with an ASCII message (every literal in this file), or none for NULL. */
+static int throwSQLiteException(JNIEnv *env, int errorCode, const char *errorMsg) {
+    if (errorMsg == NULL) return throwSQLiteException16(env, errorCode, NULL, 0);
+    size_t length = strlen(errorMsg);
+    jchar *units = (jchar *) malloc(length * sizeof(jchar) + sizeof(jchar));
+    if (units == NULL) return 0;
+    for (size_t i = 0; i < length; i++)
+        units[i] = (jchar) (unsigned char) errorMsg[i];
+    int thrown = throwSQLiteException16(env, errorCode, units, length);
+    free(units);
+    return thrown;
+}
+
+/* Throws with the connection's current message, read as UTF-16 (sqlite3_errmsg16). */
+static int throwSQLiteExceptionFromDb(JNIEnv *env, int errorCode, sqlite3 *db) {
+    const jchar *message = (const jchar *) sqlite3_errmsg16(db);
+    size_t length = 0;
+    if (message != NULL) {
+        while (message[length] != 0)
+            length++;
     }
-    int throwResult = (*env)->ThrowNew(env, exceptionClass, message);
-    free(message);
-    return throwResult == 0;
+    return throwSQLiteException16(env, errorCode, message, length);
 }
 
 static int throwIfNoRow(JNIEnv *env, sqlite3_stmt *stmt) {
@@ -128,7 +169,11 @@ static jlong JNICALL nativeOpen(JNIEnv *env, jclass clazz, jbyteArray name, jint
     int rc = sqlite3_open_v2(path, &db, openFlags, NULL);
     free(path);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, db != NULL ? sqlite3_errmsg(db) : NULL);
+        if (db != NULL) {
+            throwSQLiteExceptionFromDb(env, rc, db);
+        } else {
+            throwSQLiteException(env, rc, NULL);
+        }
         if (db != NULL) sqlite3_close_v2(db);
         return 0;
     }
@@ -148,7 +193,7 @@ static void JNICALL nativeKey(JNIEnv *env, jclass clazz, jlong dbPointer, jbyteA
     sqlite3 *db = (sqlite3 *) (intptr_t) dbPointer;
     int rc = sealite_key_from_java(env, db, key, 0);
     if (rc != SQLITE_OK && !(*env)->ExceptionCheck(env)) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(db));
+        throwSQLiteExceptionFromDb(env, rc, db);
     }
 }
 
@@ -156,7 +201,7 @@ static void JNICALL nativeRekey(JNIEnv *env, jclass clazz, jlong dbPointer, jbyt
     sqlite3 *db = (sqlite3 *) (intptr_t) dbPointer;
     int rc = sealite_key_from_java(env, db, key, 1);
     if (rc != SQLITE_OK && !(*env)->ExceptionCheck(env)) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(db));
+        throwSQLiteExceptionFromDb(env, rc, db);
     }
 }
 
@@ -165,25 +210,77 @@ static jboolean JNICALL nativeInTransaction(JNIEnv *env, jclass clazz, jlong dbP
     return sqlite3_get_autocommit(db) == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
+/*
+ * Copies a java.lang.String out of the VM into memory from sqlite3_malloc64, as `length` UTF-16 units
+ * plus one NUL unit. No Get*Critical region is held across a SQLite call: a prepare or a bind can
+ * wait on the busy handler for seconds, and a critical region would stall the garbage collector (and
+ * every allocating thread) for that long.
+ *
+ * @return the copy (release it with sqlite3_free, or hand it to SQLite with that destructor), or NULL
+ *         with an exception pending.
+ */
+static jchar *copyString(JNIEnv *env, jstring string, jsize *length, const char *tooLongMessage) {
+    jsize units = (*env)->GetStringLength(env, string);
+    /* The byte length (2 per char) must fit in the int sqlite3 takes. */
+    if (units > INT_MAX / (jsize) sizeof(jchar)) {
+        throwSQLiteException(env, SQLITE_TOOBIG, tooLongMessage);
+        return NULL;
+    }
+    jchar *copy = (jchar *) sqlite3_malloc64(((sqlite3_uint64) units + 1) * sizeof(jchar));
+    if (copy == NULL) {
+        throwOutOfMemoryError(env);
+        return NULL;
+    }
+    (*env)->GetStringRegion(env, string, 0, units, copy);
+    if ((*env)->ExceptionCheck(env)) {
+        sqlite3_free(copy);
+        return NULL;
+    }
+    copy[units] = 0;
+    *length = units;
+    return copy;
+}
+
+/* Replaces every unpaired surrogate with U+FFFD, as Java's own UTF-8 encoder does. */
+static void replaceLoneSurrogates(jchar *text, jsize length) {
+    for (jsize i = 0; i < length; i++) {
+        jchar unit = text[i];
+        if (unit >= 0xD800 && unit <= 0xDBFF) {
+            if (i + 1 < length && text[i + 1] >= 0xDC00 && text[i + 1] <= 0xDFFF) {
+                i++;
+            } else {
+                text[i] = 0xFFFD;
+            }
+        } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+            text[i] = 0xFFFD;
+        }
+    }
+}
+
 static jlong JNICALL nativePrepare(JNIEnv *env, jclass clazz, jlong dbPointer, jstring sqlString) {
     sqlite3 *db = (sqlite3 *) (intptr_t) dbPointer;
     sqlite3_stmt *stmt = NULL;
-    jsize sqlLength = (*env)->GetStringLength(env, sqlString);
-    /* The byte length (2 per char) must fit in the int sqlite3 takes. */
-    if (sqlLength > INT_MAX / (jsize) sizeof(jchar)) {
-        throwSQLiteException(env, SQLITE_TOOBIG, "SQL text too long");
-        return 0;
-    }
-    /* Java / jstring represents a string in UTF-16 encoding. */
-    const jchar *sql = (*env)->GetStringCritical(env, sqlString, NULL);
+    jsize sqlLength = 0;
+    jchar *sql = copyString(env, sqlString, &sqlLength, "SQL text too long");
     if (sql == NULL) return 0;
     int rc = sqlite3_prepare16_v2(db, sql, (int) (sqlLength * sizeof(jchar)), &stmt, NULL);
-    (*env)->ReleaseStringCritical(env, sqlString, sql);
+    sqlite3_free(sql);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(db));
+        throwSQLiteExceptionFromDb(env, rc, db);
+        return 0;
+    }
+    if (stmt == NULL) {
+        /* Empty, whitespace-only or comment-only SQL compiles to nothing. A statement object around
+         * a NULL pointer would crash in clearBindings (sqlite3_clear_bindings has no NULL check). */
+        throwSQLiteException(env, SQLITE_MISUSE, "no SQL statement");
         return 0;
     }
     return (jlong) (intptr_t) stmt;
+}
+
+static void JNICALL nativeInterrupt(JNIEnv *env, jclass clazz, jlong dbPointer) {
+    /* The one call SQLite documents as safe from any thread while others use the connection. */
+    sqlite3_interrupt((sqlite3 *) (intptr_t) dbPointer);
 }
 
 static void JNICALL nativeConnectionClose(JNIEnv *env, jclass clazz, jlong dbPointer) {
@@ -196,16 +293,27 @@ static void JNICALL nativeConnectionClose(JNIEnv *env, jclass clazz, jlong dbPoi
 static void JNICALL nativeBindBlob(JNIEnv *env, jclass clazz, jlong stmtPointer, jint index, jbyteArray value) {
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     jsize valueLength = (*env)->GetArrayLength(env, value);
-    if (valueLength < 0) {
-        throwSQLiteException(env, SQLITE_TOOBIG, "blob length out of range");
-        return;
+    int rc;
+    if (valueLength == 0) {
+        /* An empty BLOB, not NULL, and without touching the array. */
+        rc = sqlite3_bind_zeroblob(stmt, index, 0);
+    } else {
+        /* Copy out of the VM first: no SQLite call inside a critical region. SQLite takes ownership of
+         * the copy (and frees it itself, also when the bind fails). */
+        void *blob = sqlite3_malloc64((sqlite3_uint64) valueLength);
+        if (blob == NULL) {
+            throwOutOfMemoryError(env);
+            return;
+        }
+        (*env)->GetByteArrayRegion(env, value, 0, valueLength, (jbyte *) blob);
+        if ((*env)->ExceptionCheck(env)) {
+            sqlite3_free(blob);
+            return;
+        }
+        rc = sqlite3_bind_blob(stmt, index, blob, valueLength, sqlite3_free);
     }
-    jbyte *blob = (jbyte *) (*env)->GetPrimitiveArrayCritical(env, value, NULL);
-    if (blob == NULL && valueLength > 0) return;
-    int rc = sqlite3_bind_blob(stmt, index, blob, valueLength, SQLITE_TRANSIENT);
-    if (blob != NULL) (*env)->ReleasePrimitiveArrayCritical(env, value, blob, JNI_ABORT);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
@@ -213,7 +321,7 @@ static void JNICALL nativeBindDouble(JNIEnv *env, jclass clazz, jlong stmtPointe
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     int rc = sqlite3_bind_double(stmt, index, value);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
@@ -221,23 +329,20 @@ static void JNICALL nativeBindLong(JNIEnv *env, jclass clazz, jlong stmtPointer,
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     int rc = sqlite3_bind_int64(stmt, index, value);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
 static void JNICALL nativeBindText(JNIEnv *env, jclass clazz, jlong stmtPointer, jint index, jstring value) {
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
-    jsize valueLength = (*env)->GetStringLength(env, value);
-    if (valueLength > INT_MAX / (jsize) sizeof(jchar)) {
-        throwSQLiteException(env, SQLITE_TOOBIG, "text value too long");
-        return;
-    }
-    const jchar *text = (*env)->GetStringCritical(env, value, NULL);
+    jsize valueLength = 0;
+    jchar *text = copyString(env, value, &valueLength, "text value too long");
     if (text == NULL) return;
-    int rc = sqlite3_bind_text16(stmt, index, text, (int) (valueLength * sizeof(jchar)), SQLITE_TRANSIENT);
-    (*env)->ReleaseStringCritical(env, value, text);
+    replaceLoneSurrogates(text, valueLength);
+    /* SQLite takes ownership of the copy and frees it itself, also when the bind fails. */
+    int rc = sqlite3_bind_text16(stmt, index, text, (int) (valueLength * sizeof(jchar)), sqlite3_free);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
@@ -245,7 +350,7 @@ static void JNICALL nativeBindNull(JNIEnv *env, jclass clazz, jlong stmtPointer,
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     int rc = sqlite3_bind_null(stmt, index);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
@@ -258,7 +363,7 @@ static jboolean JNICALL nativeStep(JNIEnv *env, jclass clazz, jlong stmtPointer)
     if (rc == SQLITE_DONE) {
         return JNI_FALSE;
     }
-    throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+    throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     return JNI_FALSE;
 }
 
@@ -292,15 +397,18 @@ static jlong JNICALL nativeGetLong(JNIEnv *env, jclass clazz, jlong stmtPointer,
 }
 
 static jstring JNICALL nativeGetText(JNIEnv *env, jclass clazz, jlong stmtPointer, jint index) {
+    static const jchar kEmpty[1] = {0};
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     if (throwIfNoRow(env, stmt)) return NULL;
     if (throwIfInvalidColumn(env, stmt, index)) return NULL;
-    /* Java / jstring represents a string in UTF-16 encoding. */
+    /* Java / jstring represents a string in UTF-16 encoding. The length is the byte count, not a NUL
+     * scan, so a value with embedded U+0000 reads back whole. */
     const jchar *text = (const jchar *) sqlite3_column_text16(stmt, index);
     if (text == NULL && throwIfOutOfMemory(env, stmt)) return NULL;
     size_t length = (size_t) sqlite3_column_bytes16(stmt, index) / sizeof(jchar);
     if (length == 0 && throwIfOutOfMemory(env, stmt)) return NULL;
-    return (*env)->NewString(env, text, (jsize) length);
+    /* SQL NULL has no text: it reads as the empty string, like the upstream bundled driver. */
+    return (*env)->NewString(env, text != NULL ? text : kEmpty, (jsize) length);
 }
 
 static jint JNICALL nativeGetColumnCount(JNIEnv *env, jclass clazz, jlong stmtPointer) {
@@ -311,12 +419,16 @@ static jint JNICALL nativeGetColumnCount(JNIEnv *env, jclass clazz, jlong stmtPo
 static jstring JNICALL nativeGetColumnName(JNIEnv *env, jclass clazz, jlong stmtPointer, jint index) {
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     if (throwIfInvalidColumn(env, stmt, index)) return NULL;
-    const char *name = sqlite3_column_name(stmt, index);
+    /* UTF-16 into NewString: NewStringUTF wants modified UTF-8 and mangles characters outside the BMP. */
+    const jchar *name = (const jchar *) sqlite3_column_name16(stmt, index);
     if (name == NULL) {
         throwOutOfMemoryError(env);
         return NULL;
     }
-    return (*env)->NewStringUTF(env, name);
+    size_t length = 0;
+    while (name[length] != 0)
+        length++;
+    return (*env)->NewString(env, name, (jsize) length);
 }
 
 static jint JNICALL nativeGetColumnType(JNIEnv *env, jclass clazz, jlong stmtPointer, jint index) {
@@ -330,7 +442,7 @@ static void JNICALL nativeReset(JNIEnv *env, jclass clazz, jlong stmtPointer) {
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     int rc = sqlite3_reset(stmt);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
@@ -338,7 +450,7 @@ static void JNICALL nativeClearBindings(JNIEnv *env, jclass clazz, jlong stmtPoi
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     int rc = sqlite3_clear_bindings(stmt);
     if (rc != SQLITE_OK) {
-        throwSQLiteException(env, rc, sqlite3_errmsg(sqlite3_db_handle(stmt)));
+        throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
     }
 }
 
@@ -346,6 +458,80 @@ static void JNICALL nativeStatementClose(JNIEnv *env, jclass clazz, jlong stmtPo
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
     sqlite3_finalize(stmt);
 }
+
+#ifdef __ANDROID__
+/* ---- rename without replacing (Android only) ------------------------------------------------ */
+
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1 << 0)
+#endif
+#ifndef __NR_renameat2
+#if defined(__aarch64__)
+#define __NR_renameat2 276
+#elif defined(__arm__)
+#define __NR_renameat2 382
+#elif defined(__i386__)
+#define __NR_renameat2 353
+#elif defined(__x86_64__)
+#define __NR_renameat2 316
+#endif
+#endif
+
+/* A NUL-terminated copy of UTF-8 bytes with no embedded NUL, or NULL (and *error set). */
+static char *copyPathBytes(JNIEnv *env, jbyteArray bytes, int *error) {
+    jsize length = (*env)->GetArrayLength(env, bytes);
+    if (length < 1 || length > INT_MAX / 2) {
+        *error = EINVAL;
+        return NULL;
+    }
+    char *path = (char *) malloc((size_t) length + 1);
+    if (path == NULL) {
+        *error = ENOMEM;
+        return NULL;
+    }
+    (*env)->GetByteArrayRegion(env, bytes, 0, length, (jbyte *) path);
+    if ((*env)->ExceptionCheck(env)) {
+        free(path);
+        *error = EINVAL;
+        return NULL;
+    }
+    path[length] = '\0';
+    if (strlen(path) != (size_t) length) {
+        free(path);
+        *error = EINVAL;
+        return NULL;
+    }
+    return path;
+}
+
+/*
+ * renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE): renames only when `to` does not exist,
+ * atomically in the kernel. Returns 0, or the errno (EEXIST when `to` exists, EINVAL when the file
+ * system does not support the flag, ENOSYS when the kernel does not know the call). The raw system
+ * call is used because the library is built for API 24 and bionic exports renameat2 from API 30
+ * only. The caller must not call this below API 30: the seccomp filter of API 26 to 29 may kill the
+ * process on a system call it does not list.
+ */
+static jint JNICALL nativeRenameNoReplace(JNIEnv *env, jclass clazz, jbyteArray from, jbyteArray to) {
+    int error = 0;
+    char *fromPath = copyPathBytes(env, from, &error);
+    if (fromPath == NULL) return error;
+    char *toPath = copyPathBytes(env, to, &error);
+    if (toPath == NULL) {
+        free(fromPath);
+        return error;
+    }
+    long rc = syscall(__NR_renameat2, AT_FDCWD, fromPath, AT_FDCWD, toPath, RENAME_NOREPLACE);
+    int result = rc == 0 ? 0 : errno;
+    free(fromPath);
+    free(toPath);
+    return result;
+}
+
+static const JNINativeMethod sRenameMethods[] = {
+    {"nativeRenameNoReplace", "([B[B)I", (void *) nativeRenameNoReplace},
+};
+#endif
 
 /* ---- registration -------------------------------------------------------------------------- */
 
@@ -355,6 +541,7 @@ static const JNINativeMethod sConnectionMethods[] = {
     {"nativeRekey", "(J[B)V", (void *) nativeRekey},
     {"nativeInTransaction", "(J)Z", (void *) nativeInTransaction},
     {"nativePrepare", "(JLjava/lang/String;)J", (void *) nativePrepare},
+    {"nativeInterrupt", "(J)V", (void *) nativeInterrupt},
     {"nativeClose", "(J)V", (void *) nativeConnectionClose},
 };
 
@@ -407,6 +594,11 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
                          statementMethodCount) != JNI_OK) {
         return JNI_ERR;
     }
+#ifdef __ANDROID__
+    if (register_methods(env, "io/github/pasichdev/sealite/internal/NativeRenameKt", sRenameMethods, 1) != JNI_OK) {
+        return JNI_ERR;
+    }
+#endif
 
     return JNI_VERSION_1_6;
 }

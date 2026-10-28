@@ -5,12 +5,14 @@ package io.github.pasichdev.sealite
 
 import androidx.sqlite.SQLiteException
 import androidx.sqlite.throwSQLiteException
+import io.github.pasichdev.sealite.internal.ExcludeFromCoverage
 import io.github.pasichdev.sealite.internal.OpenSequence
 import io.github.pasichdev.sealite.internal.RawDb
+import io.github.pasichdev.sealite.internal.createUniqueFileNextTo
 import io.github.pasichdev.sealite.internal.databaseFiles
 import io.github.pasichdev.sealite.internal.deleteFileIfExists
 import io.github.pasichdev.sealite.internal.exec
-import io.github.pasichdev.sealite.internal.moveFileAtomically
+import io.github.pasichdev.sealite.internal.publishWithoutReplacing
 import io.github.pasichdev.sealite.internal.queryString
 import io.github.pasichdev.sealite.internal.readFileHeader
 import io.github.pasichdev.sealite.internal.wipe
@@ -52,17 +54,16 @@ public object Sealite {
     }
 
     /**
-     * Why Sealite refused a database, read from [throwable] or any of its causes; `null` when the
-     * failure is not one of Sealite's (an I/O error, a constraint, ...). Use this instead of
-     * parsing messages.
+     * The [SealiteException.error] of [throwable] or of the first [SealiteException] among its
+     * causes (Room and coroutines may wrap it); `null` when the failure is not one of Sealite's
+     * (an I/O error, a constraint, ...). Decided by type, never by message text.
      */
     @JvmStatic
     public fun errorOf(throwable: Throwable): SealiteError? {
         var current: Throwable? = throwable
         var depth = 0
         while (current != null && depth < MAX_CAUSE_DEPTH) {
-            val message = current.message
-            if (message != null) SealiteError.entries.firstOrNull { message.contains(it.token) }?.let { return it }
+            if (current is SealiteException) return current.error
             current = current.cause
             depth++
         }
@@ -85,10 +86,16 @@ public object Sealite {
         return try {
             OpenSequence.openVerified(path, OPEN_READONLY, key, config).close()
             CheckResult.Ok
-        } catch (e: SQLiteException) {
-            if (errorOf(e) == SealiteError.WRONG_KEY) CheckResult.WrongKey else throw e
+        } catch (e: SealiteException) {
+            wrongKeyOrRethrow(e)
         }
     }
+
+    // Any other error is defensive: a plaintext file is answered above, and a linked SQLite without
+    // encryption or a connection that is not keyed would need a broken build, not a test file.
+    @ExcludeFromCoverage
+    private fun wrongKeyOrRethrow(e: SealiteException): CheckResult =
+        if (e.error == SealiteError.WRONG_KEY) CheckResult.WrongKey else throw e
 
     /** [rekey] with the default [SealiteConfig]. */
     @JvmStatic
@@ -100,7 +107,8 @@ public object Sealite {
      *
      * Close every other connection to the file first (the `RoomDatabase`). The file is locked
      * exclusively for the whole operation: a connection inside a transaction (or reading a WAL
-     * database) makes this fail with `SQLITE_BUSY` before anything is written. An idle connection
+     * database) makes this fail with [SealiteError.REKEY_FAILED] (caused by `SQLITE_BUSY`) before
+     * anything is written. An idle connection
      * that still holds [oldKey] does not block it; its next read then fails, it never returns wrong
      * data. After the commit the file is reopened with [newKey] and checked with
      * `PRAGMA quick_check`.
@@ -116,75 +124,121 @@ public object Sealite {
      * The old pages are overwritten in place, but flash storage may keep old-key ciphertext in
      * blocks the file system no longer references.
      *
-     * @throws androidx.sqlite.SQLiteException with [SealiteError.WRONG_KEY] if [oldKey] does not
-     *   open the file; [SealiteError.REKEY_FAILED] (or a plain SQLite error such as `SQLITE_BUSY`)
-     *   if it failed before the commit, so the file is still under [oldKey];
+     * @throws SealiteException with [SealiteError.WRONG_KEY] if [oldKey] does not open the file;
+     *   [SealiteError.REKEY_FAILED] if it failed before the commit (the cause is the original
+     *   failure, for example `SQLITE_BUSY`), so the file is still under [oldKey];
      *   [SealiteError.REKEY_UNVERIFIED] if it failed after the commit, so the file is most likely
-     *   under [newKey] and both keys must be kept.
+     *   under [newKey] and both keys must be kept. Once the file is open with [oldKey], every
+     *   failure is one of these two: no `androidx.sqlite.SQLiteException` escapes.
+     * @throws IllegalArgumentException if there is no database at [path] (or the file is empty).
      */
-    // Each throw is a distinct, documented outcome (missing file, pre-commit, post-commit).
-    @Suppress("ThrowsCount")
     @JvmStatic
     public fun rekey(path: String, oldKey: SealiteKey, newKey: SealiteKey, config: SealiteConfig) {
-        require(readFileHeader(path, 1)?.isNotEmpty() == true) { "No database at $path" }
-        val db = OpenSequence.openVerified(path, OPEN_READWRITE, oldKey, config)
-        try {
-            // Hold an exclusive lock until close: no other connection can read pages while they
-            // change keys, and an open one makes this fail here, before anything is written.
-            db.exec("PRAGMA locking_mode = EXCLUSIVE")
-            db.exec("BEGIN EXCLUSIVE")
-            db.exec("COMMIT")
-            // WAL frames are decrypted with the connection's current key: fold them into the
-            // main file before the key changes.
-            val wal = db.queryString("PRAGMA journal_mode").equals("wal", ignoreCase = true)
-            if (wal) checkpoint(db)
+        rekey(path, oldKey, newKey, config, OpenSequence::openVerified)
+    }
 
-            val bytes = newKey.keyBytes()
-            try {
-                db.rekey(bytes)
-            } finally {
-                bytes.wipe()
-            }
-            // sqlite3_rekey_v2 ignores the result of its commit: a still open transaction means
-            // the pages were not committed, and closing would roll them back to the old key.
-            if (db.inTransaction()) {
-                runCatching { db.exec("ROLLBACK") }
-                throwSQLiteException(
-                    SQLITE_ERROR,
-                    "${SealiteError.REKEY_FAILED.token}: the re-encrypted pages could not be committed",
-                )
-            }
+    /** [rekey] with the way a verified handle is opened injectable, so tests can inject faults. */
+    internal fun rekey(
+        path: String,
+        oldKey: SealiteKey,
+        newKey: SealiteKey,
+        config: SealiteConfig,
+        open: (String, Int, SealiteKey, SealiteConfig) -> RawDb,
+    ) {
+        require(readFileHeader(path, 1)?.isNotEmpty() == true) { "No database at $path" }
+        val db = openForRekey(path, oldKey, config, open)
+        try {
+            val wal = rekeyUntilCommitted(db, newKey)
             // From here on the new key is committed: any failure is "unverified", not "failed".
-            try {
-                if (wal) checkpoint(db)
-            } catch (e: SQLiteException) {
-                throw unverified("the WAL could not be checkpointed", e)
-            }
+            checkpointCommitted(db, wal)
         } finally {
             db.close()
         }
         // Prove the file opens with the new key before the caller forgets the old one.
-        val result =
-            try {
-                val reopened = OpenSequence.openVerified(path, OPEN_READONLY, newKey, config)
-                try {
-                    reopened.queryString("PRAGMA quick_check")
-                } finally {
-                    reopened.close()
-                }
-            } catch (e: SQLiteException) {
-                throw unverified("reopening with the new key failed", e)
-            }
-        if (result != "ok") throw unverified("quick_check after rekey reported $result", null)
+        val result = quickCheckWithNewKey(path, newKey, config, open)
+        if (result != "ok") {
+            throw SealiteException(SealiteError.REKEY_UNVERIFIED, "quick_check after rekey reported $result")
+        }
     }
 
-    private fun unverified(reason: String, cause: Throwable?): Throwable {
-        val error =
-            runCatching {
-                throwSQLiteException(SQLITE_ERROR, "${SealiteError.REKEY_UNVERIFIED.token}: $reason")
-            }.exceptionOrNull()!!
-        if (cause != null) error.addSuppressed(cause)
-        return error
+    private fun openForRekey(
+        path: String,
+        oldKey: SealiteKey,
+        config: SealiteConfig,
+        open: (String, Int, SealiteKey, SealiteConfig) -> RawDb,
+    ): RawDb = try {
+        open(path, OPEN_READWRITE, oldKey, config)
+    } catch (e: SQLiteException) {
+        throw SealiteException(SealiteError.REKEY_FAILED, "the database could not be opened; nothing was changed", e)
+    }
+
+    /**
+     * Everything up to and including the commit. Returns whether the database is in WAL mode. A
+     * SQLite failure here leaves the file under the old key and is reported as
+     * [SealiteError.REKEY_FAILED] with the original as its cause.
+     */
+    private fun rekeyUntilCommitted(db: RawDb, newKey: SealiteKey): Boolean = try {
+        // Hold an exclusive lock until close: no other connection can read pages while they
+        // change keys, and an open one makes this fail here, before anything is written.
+        db.exec("PRAGMA locking_mode = EXCLUSIVE")
+        db.exec("BEGIN EXCLUSIVE")
+        db.exec("COMMIT")
+        // WAL frames are decrypted with the connection's current key: fold them into the
+        // main file before the key changes.
+        val wal = db.queryString("PRAGMA journal_mode").equals("wal", ignoreCase = true)
+        if (wal) checkpoint(db)
+
+        val bytes = newKey.keyBytes()
+        try {
+            db.rekey(bytes)
+        } finally {
+            bytes.wipe()
+        }
+        requireCommitted(db)
+        wal
+    } catch (e: SQLiteException) {
+        throw SealiteException(
+            SealiteError.REKEY_FAILED,
+            "SQLite stopped the rekey before the commit; the file is still under the old key",
+            e,
+        )
+    }
+
+    /**
+     * sqlite3_rekey_v2 ignores the result of its commit: a still open transaction means the pages
+     * were not committed, and closing would roll them back to the old key.
+     */
+    private fun requireCommitted(db: RawDb) {
+        if (db.inTransaction()) {
+            runCatching { db.exec("ROLLBACK") }
+            throw SealiteException(SealiteError.REKEY_FAILED, "the re-encrypted pages could not be committed")
+        }
+    }
+
+    private fun checkpointCommitted(db: RawDb, wal: Boolean) {
+        try {
+            if (wal) checkpoint(db)
+        } catch (e: SQLiteException) {
+            throw SealiteException(SealiteError.REKEY_UNVERIFIED, "the WAL could not be checkpointed", e)
+        }
+    }
+
+    private fun quickCheckWithNewKey(
+        path: String,
+        newKey: SealiteKey,
+        config: SealiteConfig,
+        open: (String, Int, SealiteKey, SealiteConfig) -> RawDb,
+    ): String? = try {
+        val reopened = open(path, OPEN_READONLY, newKey, config)
+        try {
+            reopened.queryString("PRAGMA quick_check")
+        } finally {
+            reopened.close()
+        }
+    } catch (e: SQLiteException) {
+        throw SealiteException(SealiteError.REKEY_UNVERIFIED, "reopening with the new key failed", e)
+    } catch (e: SealiteException) {
+        throw SealiteException(SealiteError.REKEY_UNVERIFIED, "reopening with the new key failed", e)
     }
 
     /** [encryptPlaintext] with the default [SealiteConfig]. */
@@ -197,9 +251,12 @@ public object Sealite {
      * `sqlcipher_export`: schema, rows, `user_version`, `application_id` and `auto_vacuum`. The
      * page size comes from [config], and the journal mode is not copied (Room sets its own).
      *
-     * The copy is built in a temporary file next to [encryptedPath], in one transaction, checked
-     * with `PRAGMA integrity_check`, and only then renamed into place: [encryptedPath] either does
-     * not exist or is complete. A failure removes the temporary file.
+     * The copy is built in a new, uniquely named temporary file next to [encryptedPath] (created
+     * exclusively, so concurrent migrations never share one), in one transaction, checked with
+     * `PRAGMA integrity_check`, and only then published under [encryptedPath] without replacing
+     * anything: [encryptedPath] either does not exist or is complete, and if another process
+     * created it meanwhile this call fails instead of overwriting it. A failure removes the
+     * temporary file; a crash may leave one behind (`.<name>.sealite-*`), safe to delete.
      *
      * The plaintext file is left as it is. Delete it (and its `-journal`, `-wal` and `-shm`) once
      * the copy is in use; deleting does not erase flash storage, so the plaintext may stay
@@ -207,6 +264,17 @@ public object Sealite {
      *
      * @throws IllegalArgumentException if [plainPath] is missing or not a plaintext SQLite
      *   database, or [encryptedPath] or one of its sidecar files already exists.
+     * @throws IllegalStateException if [encryptedPath] appeared while the copy was being built.
+     *
+     * On the JVM and Apple platforms the publish is a hard link, which refuses an existing target
+     * atomically; on a file system without hard links (FAT, some network shares) it fails with the
+     * platform's I/O exception rather than risk replacing a file. Android apps may not create hard
+     * links: on API 30 and later the publish is `renameat2(RENAME_NOREPLACE)`, atomic in the kernel
+     * against anything that creates the target. Below API 30 (or on a file system without that flag)
+     * it is a check and a rename under a lock that every Sealite migration to the same path takes,
+     * across threads and processes (the lock file `.<name>.sealite.lock` stays). That guarantee holds
+     * against every other Sealite publish, not against unrelated code of the same app that writes the
+     * same path; a dangling symbolic link at the target counts as existing.
      */
     // Any failure, whatever its type, must roll back and remove the temporary file, then rethrow.
     @Suppress("ThrowsCount", "TooGenericExceptionCaught")
@@ -220,8 +288,7 @@ public object Sealite {
             require(readFileHeader(file, 1) == null) { "$file already exists" }
         }
 
-        val temp = "$encryptedPath$TEMP_SUFFIX"
-        databaseFiles(temp).forEach(::deleteFileIfExists) // left over by a crash
+        val temp = createUniqueFileNextTo(encryptedPath)
         try {
             // The encrypted database is "main" and keyed through the API; the plaintext one is
             // attached with an empty key. No secret is ever part of SQL text.
@@ -232,10 +299,10 @@ public object Sealite {
                     it.step()
                 }
                 // auto_vacuum only takes effect before the first table exists.
-                val autoVacuum = db.queryString("PRAGMA plaintext.auto_vacuum")?.toIntOrNull() ?: 0
+                val autoVacuum = db.pragmaInt("PRAGMA plaintext.auto_vacuum")
                 db.exec("PRAGMA main.auto_vacuum = $autoVacuum")
-                val userVersion = db.queryString("PRAGMA plaintext.user_version")?.toIntOrNull() ?: 0
-                val applicationId = db.queryString("PRAGMA plaintext.application_id")?.toIntOrNull() ?: 0
+                val userVersion = db.pragmaInt("PRAGMA plaintext.user_version")
+                val applicationId = db.pragmaInt("PRAGMA plaintext.application_id")
 
                 db.exec("BEGIN IMMEDIATE")
                 try {
@@ -249,16 +316,26 @@ public object Sealite {
                 }
                 db.exec("DETACH DATABASE plaintext")
 
-                val integrity = db.queryString("PRAGMA main.integrity_check")
-                check(integrity == "ok") { "integrity_check of the encrypted copy reported $integrity" }
+                requireIntegrity(db)
             } finally {
                 db.close()
             }
-            moveFileAtomically(temp, encryptedPath)
+            publishWithoutReplacing(temp, encryptedPath)
         } catch (t: Throwable) {
             databaseFiles(temp).forEach { runCatching { deleteFileIfExists(it) } }
             throw t
         }
+    }
+
+    // SQLite always answers these pragmas with a number, so the fallback is unreachable.
+    @ExcludeFromCoverage
+    private fun RawDb.pragmaInt(sql: String): Int = queryString(sql)?.toIntOrNull() ?: 0
+
+    // Unreachable in a test: sqlcipher_export copies through SQL, so the copy is consistent by construction.
+    @ExcludeFromCoverage
+    private fun requireIntegrity(db: RawDb) {
+        val integrity = db.queryString("PRAGMA main.integrity_check")
+        check(integrity == "ok") { "integrity_check of the encrypted copy reported $integrity" }
     }
 
     /**
@@ -309,15 +386,19 @@ public object Sealite {
         try {
             return Versions(
                 sealite = BuildInfo.VERSION,
-                sqlite = db.queryString("SELECT sqlite_version()").orEmpty(),
-                sqlcipher = db.queryString("PRAGMA cipher_version").orEmpty(),
-                cryptoProvider = db.queryString("PRAGMA cipher_provider").orEmpty(),
-                cryptoProviderVersion = db.queryString("PRAGMA cipher_provider_version").orEmpty(),
+                sqlite = db.text("SELECT sqlite_version()"),
+                sqlcipher = db.text("PRAGMA cipher_version"),
+                cryptoProvider = db.text("PRAGMA cipher_provider"),
+                cryptoProviderVersion = db.text("PRAGMA cipher_provider_version"),
             )
         } finally {
             db.close()
         }
     }
+
+    // SQLite answers each of these queries with a row, so the empty fallback is unreachable.
+    @ExcludeFromCoverage
+    private fun RawDb.text(sql: String): String = queryString(sql).orEmpty()
 
     /** `wal_checkpoint(TRUNCATE)` must fully succeed: its first column is 1 when it was blocked. */
     private fun checkpoint(db: RawDb) {
@@ -328,10 +409,8 @@ public object Sealite {
     }
 
     private val PLAINTEXT_HEADER = "SQLite format 3\u0000".encodeToByteArray()
-    private const val TEMP_SUFFIX = ".sealite-tmp"
     private const val RAW_KEY_SIZE = 32
     private const val MAX_CAUSE_DEPTH = 16
-    private const val SQLITE_ERROR = 1
     private const val SQLITE_BUSY = 5
     private const val OPEN_READONLY = 0x00000001
     private const val OPEN_READWRITE = 0x00000002

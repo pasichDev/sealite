@@ -25,7 +25,8 @@ class SealiteErrorTest {
     fun wrongKeyIsWrongKey() {
         val path = newPath()
         withDb(path, rawKey(1)) { it.createNotes("x") }
-        val e = assertFailsWith<SQLiteException> { withDb(path, rawKey(2)) {} }
+        val e = assertFailsWith<SealiteException> { withDb(path, rawKey(2)) {} }
+        assertEquals(SealiteError.WRONG_KEY, e.error)
         assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e))
     }
 
@@ -33,7 +34,7 @@ class SealiteErrorTest {
     fun wrongKeyIsFoundThroughTheCauseChain() {
         val path = newPath()
         withDb(path, rawKey(1)) { it.createNotes("x") }
-        val e = assertFailsWith<SQLiteException> { withDb(path, rawKey(2)) {} }
+        val e = assertFailsWith<SealiteException> { withDb(path, rawKey(2)) {} }
         val wrapped = IllegalStateException("outer", RuntimeException("middle", e))
         assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(wrapped))
     }
@@ -42,8 +43,8 @@ class SealiteErrorTest {
     fun aPlaintextDatabaseIsNotEncrypted() {
         val path = newPath()
         writeFileBytes(path, PLAINTEXT_DATABASE)
-        val e = assertFailsWith<SQLiteException> { withDb(path, rawKey(1)) {} }
-        assertEquals(SealiteError.NOT_ENCRYPTED, Sealite.errorOf(e))
+        val e = assertFailsWith<SealiteException> { withDb(path, rawKey(1)) {} }
+        assertEquals(SealiteError.NOT_ENCRYPTED, e.error)
         // The file is left exactly as it was.
         kotlin.test.assertContentEquals(PLAINTEXT_DATABASE, readFileBytes(path))
     }

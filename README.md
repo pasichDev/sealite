@@ -1,8 +1,13 @@
 # Sealite
 
-[![CI](https://github.com/pasichdev/sealite/actions/workflows/ci.yml/badge.svg)](https://github.com/pasichdev/sealite/actions/workflows/ci.yml)
+[![CI](https://github.com/pasichDev/sealite/actions/workflows/ci.yml/badge.svg)](https://github.com/pasichDev/sealite/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.pasichdev/sealite)](https://central.sonatype.com/artifact/io.github.pasichdev/sealite)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.4.21-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20macOS%20%7C%20JVM%3A%20Windows%2C%20Linux%2C%20macOS-informational)](#supported-platforms)
+[![API docs](https://img.shields.io/badge/API-docs-blue)](https://pasichdev.github.io/sealite/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pasichDev/sealite/badge)](https://scorecard.dev/viewer/?uri=github.com/pasichDev/sealite)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/pasichdev)
 
 An encrypted `androidx.sqlite.SQLiteDriver` for Kotlin Multiplatform, built on
 [SQLCipher](https://www.zetetic.net/sqlcipher/) Community Edition. Room KMP (2.8.x and 3.x) and
@@ -114,14 +119,14 @@ SealiteDriver(SealiteKey.raw(key)).use { driver ->
 
 Shut down in this order: close the `RoomDatabase`, then the `SealiteDriver` (which wipes its key).
 
-> [!WARNING]
-> **Never enable Room's `allowDataLossOnRecovery(true)` together with Sealite.** A wrong key makes
-> SQLite report `SQLITE_NOTADB`, which looks exactly like a corrupt file. With that option Room
-> treats it as corruption, **deletes the database and creates an empty one**. A mistyped or lost
-> key would destroy the user's data. Sealite throws a `SQLiteException` that `Sealite.errorOf` maps to
-> `SealiteError.WRONG_KEY` instead; leave Room's default behaviour (throw) in place and handle the
-> error yourself. An encrypted database is indistinguishable from random bytes, so a damaged file
-> reports `WRONG_KEY` too: never answer it by deleting the database.
+> [!NOTE]
+> **A wrong key never makes Room delete your database.** Room's corruption recovery
+> (`allowDataLossOnRecovery(true)` in Room 3) deletes a database only when opening fails with
+> `androidx.sqlite.SQLiteException`. Sealite reports a wrong key, a plaintext file and its other
+> refusals as `SealiteException`, which is not a `SQLiteException`, so Room rethrows it instead of
+> recovering by deletion. A test covers this for Room 2.8 and Room 3. An encrypted database is
+> indistinguishable from random bytes, so a damaged file also reports `WRONG_KEY`: never answer it
+> by deleting the database yourself.
 
 ## Key management
 
@@ -176,20 +181,21 @@ Sealite always turns on SQLCipher's memory sanitization (`cipher_memory_security
 that held decrypted pages or keys is overwritten. There is no switch; the setting is library-wide in
 SQLCipher and can not be turned off again once it is on.
 
-### Errors: `SealiteError` and `Sealite.errorOf`
+### Errors: `SealiteException`, `SealiteError` and `Sealite.errorOf`
 
-Failures reach callers as `androidx.sqlite.SQLiteException`, and Room wraps and rethrows them. Do
-not parse messages: hand the exception, or anything that has it as a cause, to `Sealite.errorOf`.
+When Sealite refuses a database it throws `SealiteException`, whose `error` is a `SealiteError`.
+Room may wrap it; `Sealite.errorOf(e)` finds it in the cause chain, by type (never by message
+text). Ordinary SQLite failures (I/O, constraints, a damaged page under the right key, a closed
+connection) stay `androidx.sqlite.SQLiteException`, as with any driver.
 
 ```kotlin
 try {
     openDatabase()
-} catch (e: Exception) {
-    when (Sealite.errorOf(e)) {
+} catch (e: SealiteException) {           // or catch (e: Exception) + Sealite.errorOf(e)
+    when (e.error) {
         SealiteError.WRONG_KEY -> askForTheKeyAgain()
         SealiteError.NOT_ENCRYPTED -> offerMigration()
-        null -> throw e                  // not one of Sealite's: an I/O error, a constraint, ...
-        else -> reportBug(e)             // NOT_KEYED, PROVIDER_MISSING, REKEY_*
+        else -> reportBug(e)               // NOT_KEYED, PROVIDER_MISSING, REKEY_*
     }
 }
 ```
@@ -204,6 +210,21 @@ try {
 | `REKEY_UNVERIFIED` | `Sealite.rekey` committed the new key but could not verify it: keep both keys |
 
 New values may be added in minor releases: keep an `else` branch when matching.
+
+### Threading
+
+A connection and its statements share one lock. Calls from different threads are serialized, so a
+connection is safe to use from several threads, but they do not run in parallel (Room already gives
+each connection to one coroutine at a time). `close()` on a connection interrupts a running query
+(`sqlite3_interrupt`), waits for the call in progress, finalizes the statements still open and then
+closes the handle; after that, every call on the connection or one of its statements throws
+`SQLiteException` (`SQLITE_MISUSE`, "connection is closed") instead of touching freed memory.
+Closing a statement is idempotent and waits for the connection's lock; it does not interrupt.
+
+Text and blobs behave the same on every platform: `getText` on SQL `NULL` returns `""` (use
+`isNull`), text with embedded `U+0000` round-trips intact, an unpaired UTF-16 surrogate bound with
+`bindText` is stored as `U+FFFD`, and an empty `ByteArray` is stored as an empty BLOB (not `NULL`).
+SQL that compiles to nothing (empty, whitespace or comments only) is rejected with `SQLITE_MISUSE`.
 
 ### Maintenance: `Sealite`
 
@@ -225,8 +246,9 @@ including random bytes, is `WrongKey`.
 **`Sealite.rekey`** re-encrypts in place from `oldKey` to `newKey`. It needs the file to itself:
 close the `RoomDatabase` first. The file is locked exclusively for the whole operation, so a
 connection that holds a lock (an open transaction, a reader in WAL mode) makes it fail with
-`SQLITE_BUSY`. A merely idle connection holds no lock in the rollback-journal mode and does not stop
-it, so do not rely on that; it is then left with a stale key and its next read fails. A WAL is
+`REKEY_FAILED` (caused by `SQLITE_BUSY`). A merely idle connection holds no lock in the
+rollback-journal mode and does not stop it, so do not rely on that; it is then left with a stale
+key and its next read fails. A WAL is
 checkpointed before the key changes. After the commit the file is reopened with `newKey` and checked
 with `PRAGMA quick_check`.
 
@@ -239,18 +261,24 @@ the old key or entirely under the new one. Store keys accordingly:
 4. On start-up with a pending key: `Sealite.check` with `newKey`; if that is not `Ok`, `check` with
    `oldKey`.
 
-Failures: `WRONG_KEY` if `oldKey` does not open the file; `REKEY_FAILED` (or a plain `SQLITE_BUSY`)
-when it failed before the commit, so the file is still under `oldKey`; `REKEY_UNVERIFIED` when it
-failed after the commit, so the file is most likely under `newKey`, and you keep **both** keys until
-`Sealite.check` tells which one opens it.
+Failures are `SealiteException`s, never a raw `SQLiteException`: `WRONG_KEY` if `oldKey` does not
+open the file; `REKEY_FAILED` when it failed before the commit (the cause is the original failure,
+for example `SQLITE_BUSY`), so the file is still under `oldKey`; `REKEY_UNVERIFIED` when it failed
+after the commit, so the file is most likely under `newKey`, and you keep **both** keys until
+`Sealite.check` tells which one opens it. A missing or empty file is an `IllegalArgumentException`.
 
 **`Sealite.encryptPlaintext`** writes an encrypted copy of a plaintext database with
 `sqlcipher_export`. What is copied: the schema (tables, indexes, views, triggers), all rows,
 `AUTOINCREMENT` sequences, `user_version`, `application_id` and `auto_vacuum`. What is not: the
 journal mode (Room sets its own) and the page size (it comes from the `SealiteConfig`). The copy is
 built in a temporary file `<encrypted>.sealite-tmp` in one transaction, checked with
-`PRAGMA integrity_check`, and only then moved into place atomically: the destination either does not
-exist or is complete, and a failure removes the temporary file. It throws `IllegalArgumentException`
+`PRAGMA integrity_check`, and only then moved into place without ever replacing anything: the
+destination either does not exist or is complete, and a failure removes the temporary file. On the
+JVM and Apple platforms that is a hard link; on Android API 30 and later it is
+`renameat2(RENAME_NOREPLACE)`, atomic in the kernel. On Android API 24 to 29 it is a check and a rename
+under a lock that every Sealite migration to the same path takes (across threads and processes): that
+holds against every other Sealite publish, not against unrelated code of your app that writes the
+same path. It throws `IllegalArgumentException`
 without touching anything if the source is missing or not a plaintext database, or the destination
 or one of its `-journal`, `-wal` or `-shm` files already exists. The plaintext file is left as it is:
 delete it and its sidecar files once the copy is in use.
@@ -337,7 +365,7 @@ Room's pool. Use a raw key.
 **Can I use it next to `sqlite-bundled`?** Yes; symbols are renamed and libraries are linked with
 hidden visibility.
 
-**What happens if the key is wrong?** `SQLiteException` that `Sealite.errorOf` maps to
+**What happens if the key is wrong?** A `SealiteException` with `error ==`
 `SealiteError.WRONG_KEY`; the file is not modified.
 
 **I need to know which SQLCipher I am running.** `Sealite.versions`.
@@ -353,6 +381,13 @@ A SQLCipher or OpenSSL security release is followed by a patch release of Sealit
 ## Building and contributing
 
 See [CONTRIBUTING](CONTRIBUTING.md). Changes are tracked in [CHANGELOG](CHANGELOG.md).
+
+## Support
+
+Sealite is free and open source. If it is useful to you, you can support its maintenance (security
+updates of SQLCipher and OpenSSL, new platforms) on Ko-fi.
+
+[![Support Sealite on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/pasichdev)
 
 ## License
 

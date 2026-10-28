@@ -30,6 +30,7 @@ style:
       - '**/commonTest/**'
       - '**/jvmTest/**'
       - '**/nativeTest/**'
+      - '**/androidDeviceTest/**'
       - '**/SealiteKey.kt'
       - '**/SealiteConfig.kt'
       - '**/OpenSequence.kt'
@@ -51,7 +52,7 @@ naming:
   MatchingDeclarationName:
     active: false # files are named <Type>.<platform>.kt
   FunctionNaming:
-    excludes: ['**/commonTest/**', '**/jvmTest/**', '**/nativeTest/**']
+    excludes: ['**/commonTest/**', '**/jvmTest/**', '**/nativeTest/**', '**/androidDeviceTest/**']
 
 exceptions:
   TooGenericExceptionCaught:

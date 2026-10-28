@@ -84,6 +84,11 @@ final class io.github.pasichdev.sealite/SealiteDriver : androidx.sqlite/SQLiteDr
     final fun open(kotlin/String, kotlin/Int): androidx.sqlite/SQLiteConnection // io.github.pasichdev.sealite/SealiteDriver.open|open(kotlin.String;kotlin.Int){}[0]
 }
 
+final class io.github.pasichdev.sealite/SealiteException : kotlin/RuntimeException { // io.github.pasichdev.sealite/SealiteException|null[0]
+    final val error // io.github.pasichdev.sealite/SealiteException.error|{}error[0]
+        final fun <get-error>(): io.github.pasichdev.sealite/SealiteError // io.github.pasichdev.sealite/SealiteException.error.<get-error>|<get-error>(){}[0]
+}
+
 final class io.github.pasichdev.sealite/SealiteKey : kotlin/AutoCloseable { // io.github.pasichdev.sealite/SealiteKey|null[0]
     final fun close() // io.github.pasichdev.sealite/SealiteKey.close|close(){}[0]
 

@@ -24,103 +24,78 @@ package io.github.pasichdev.sealite.internal
 
 import androidx.sqlite.SQLiteStatement
 import androidx.sqlite.throwSQLiteException
-import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.locks.withLock
 
+/**
+ * A prepared statement of a [JniRawDb]. Every call runs under the connection's lock (see [JniRawDb]),
+ * and the connection finalizes the statements still open when it closes.
+ *
+ * `getText` on a SQL NULL returns the empty string on every platform, like the bundled driver of
+ * androidx.sqlite on the JVM; use `isNull` to tell NULL from `""`. A lone UTF-16 surrogate in
+ * `bindText` is stored as U+FFFD.
+ *
+ * [close] waits for the connection's lock: closing a statement while another thread is inside a call
+ * on the same connection (a long `step`, say) blocks until that call returns. Only closing the
+ * connection interrupts a running query.
+ */
 internal class JniStatement(
-    @Suppress("unused") private val connectionPointer: Long,
+    private val owner: JniRawDb,
     private val statementPointer: Long,
 ) : SQLiteStatement {
-    private val closed = atomic(false)
+    // Guarded by owner.lock.
+    private var closed = false
 
-    override fun bindBlob(index: Int, value: ByteArray) {
-        throwIfClosed()
-        nativeBindBlob(statementPointer, index, value)
+    override fun bindBlob(index: Int, value: ByteArray) = locked { nativeBindBlob(statementPointer, index, value) }
+
+    override fun bindDouble(index: Int, value: Double) = locked { nativeBindDouble(statementPointer, index, value) }
+
+    override fun bindLong(index: Int, value: Long) = locked { nativeBindLong(statementPointer, index, value) }
+
+    override fun bindText(index: Int, value: String) = locked { nativeBindText(statementPointer, index, value) }
+
+    override fun bindNull(index: Int) = locked { nativeBindNull(statementPointer, index) }
+
+    override fun getBlob(index: Int): ByteArray = locked { nativeGetBlob(statementPointer, index) }
+
+    override fun getDouble(index: Int): Double = locked { nativeGetDouble(statementPointer, index) }
+
+    override fun getLong(index: Int): Long = locked { nativeGetLong(statementPointer, index) }
+
+    override fun getText(index: Int): String = locked { nativeGetText(statementPointer, index) }
+
+    override fun isNull(index: Int): Boolean = locked {
+        nativeGetColumnType(statementPointer, index) == COLUMN_TYPE_NULL
     }
 
-    override fun bindDouble(index: Int, value: Double) {
-        throwIfClosed()
-        nativeBindDouble(statementPointer, index, value)
-    }
+    override fun getColumnCount(): Int = locked { nativeGetColumnCount(statementPointer) }
 
-    override fun bindLong(index: Int, value: Long) {
-        throwIfClosed()
-        nativeBindLong(statementPointer, index, value)
-    }
+    override fun getColumnName(index: Int): String = locked { nativeGetColumnName(statementPointer, index) }
 
-    override fun bindText(index: Int, value: String) {
-        throwIfClosed()
-        nativeBindText(statementPointer, index, value)
-    }
+    override fun getColumnType(index: Int): Int = locked { nativeGetColumnType(statementPointer, index) }
 
-    override fun bindNull(index: Int) {
-        throwIfClosed()
-        nativeBindNull(statementPointer, index)
-    }
+    override fun step(): Boolean = locked { nativeStep(statementPointer) }
 
-    override fun getBlob(index: Int): ByteArray {
-        throwIfClosed()
-        return nativeGetBlob(statementPointer, index)
-    }
+    override fun reset() = locked { nativeReset(statementPointer) }
 
-    override fun getDouble(index: Int): Double {
-        throwIfClosed()
-        return nativeGetDouble(statementPointer, index)
-    }
+    override fun clearBindings() = locked { nativeClearBindings(statementPointer) }
 
-    override fun getLong(index: Int): Long {
-        throwIfClosed()
-        return nativeGetLong(statementPointer, index)
-    }
-
-    override fun getText(index: Int): String {
-        throwIfClosed()
-        return nativeGetText(statementPointer, index)
-    }
-
-    override fun isNull(index: Int): Boolean {
-        throwIfClosed()
-        return nativeGetColumnType(statementPointer, index) == COLUMN_TYPE_NULL
-    }
-
-    override fun getColumnCount(): Int {
-        throwIfClosed()
-        return nativeGetColumnCount(statementPointer)
-    }
-
-    override fun getColumnName(index: Int): String {
-        throwIfClosed()
-        return nativeGetColumnName(statementPointer, index)
-    }
-
-    override fun getColumnType(index: Int): Int {
-        throwIfClosed()
-        return nativeGetColumnType(statementPointer, index)
-    }
-
-    override fun step(): Boolean {
-        throwIfClosed()
-        return nativeStep(statementPointer)
-    }
-
-    override fun reset() {
-        throwIfClosed()
-        nativeReset(statementPointer)
-    }
-
-    override fun clearBindings() {
-        throwIfClosed()
-        nativeClearBindings(statementPointer)
-    }
-
-    override fun close() {
-        // Compare-and-set: of any number of racing or repeated calls only one finalizes the statement.
-        if (closed.compareAndSet(false, true)) nativeClose(statementPointer)
-    }
-
-    private fun throwIfClosed() {
-        if (closed.value) {
-            throwSQLiteException(OpenSequence.SQLITE_MISUSE, "statement is closed")
+    override fun close() = owner.lock.withLock {
+        if (!closed) {
+            owner.forget(this)
+            finalizeLocked()
         }
+    }
+
+    /** Finalizes a statement that is still open. Must hold the connection's lock. */
+    internal fun finalizeLocked() {
+        closed = true
+        nativeClose(statementPointer)
+    }
+
+    private inline fun <T> locked(block: () -> T): T = owner.lock.withLock {
+        owner.throwIfClosed()
+        if (closed) throwSQLiteException(OpenSequence.SQLITE_MISUSE, "statement is closed")
+        block()
     }
 
     private companion object {

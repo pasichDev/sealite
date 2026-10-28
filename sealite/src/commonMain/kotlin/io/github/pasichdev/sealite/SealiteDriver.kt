@@ -19,11 +19,15 @@ import io.github.pasichdev.sealite.internal.OpenSequence
  * The driver keeps its own copy of [key] (Room opens pool connections lazily) and wipes it in
  * [close]; the caller may close its own key right after construction. A connection is returned
  * only after the key was applied and the database verified: a wrong key, a plaintext database, or
- * a build that somehow linked a plain SQLite, fails [open] with an `SQLiteException`; pass it (or
- * the exception Room wraps it in) to [Sealite.errorOf] to get the [SealiteError].
+ * a build that somehow linked a plain SQLite, fails [open] with a [SealiteException] (not an
+ * `androidx.sqlite.SQLiteException`); pass it (or the exception Room wraps it in) to
+ * [Sealite.errorOf] to get the [SealiteError]. Room's corruption recovery
+ * (`allowDataLossOnRecovery`) reacts only to `SQLiteException`, so it never deletes the database
+ * over a wrong key. Plain SQLite failures (I/O, a damaged page under the right key) stay
+ * `SQLiteException`.
  *
- * Never combine with Room's `allowDataLossOnRecovery(true)`: a wrong key looks exactly like a
- * corrupt file, and Room would delete the database.
+ * A damaged file reports [SealiteError.WRONG_KEY] too, because an encrypted file is
+ * indistinguishable from random bytes: never delete the database yourself on `WRONG_KEY`.
  *
  * @param key the key every connection is opened with; copied, so the caller may close its own.
  * @param config how the file is read and written; the SQLCipher 4 defaults unless the file says
@@ -49,9 +53,9 @@ public class SealiteDriver(
     /**
      * Opens with explicit `SQLITE_OPEN_*` [flags].
      *
-     * @throws androidx.sqlite.SQLiteException if the key does not open the file
-     *   ([SealiteError.WRONG_KEY]), the file is not encrypted ([SealiteError.NOT_ENCRYPTED]) or it
-     *   can not be opened.
+     * @throws SealiteException if the key does not open the file ([SealiteError.WRONG_KEY]) or the
+     *   file is not encrypted ([SealiteError.NOT_ENCRYPTED]).
+     * @throws androidx.sqlite.SQLiteException if SQLite can not open the file (I/O, permissions).
      * @throws IllegalStateException if the driver is closed.
      */
     public fun open(fileName: String, flags: Int): SQLiteConnection {

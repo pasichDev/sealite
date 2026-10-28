@@ -1,0 +1,92 @@
+# Watches the native code Sealite bundles. SQLCipher and OpenSSL are pinned (version + sha256) in
+# build-logic, not as Gradle dependencies, so Dependabot does not see them. Every week this compares
+# the pinned versions with the latest upstream releases and opens one issue per newer release.
+# A newer OpenSSL in the pinned LTS line, or a newer SQLCipher, may carry security fixes: ship a
+# patch release of Sealite promptly.
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compare pinned and upstream versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          pinned_sqlcipher="$(sed -nE 's/^val sqlcipherVersion = "([0-9.]+)"$/\1/p' build-logic/src/main/kotlin/sealite.native.gradle.kts)"
+          pinned_openssl="$(sed -nE 's/^ *val osslVersion = "([0-9.]+)"$/\1/p' build-logic/src/main/kotlin/io/github/pasichdev/sealite/build/SealiteCrossPlugin.kt)"
+          if [ -z "$pinned_sqlcipher" ] || [ -z "$pinned_openssl" ]; then
+            echo "::error::could not read the pinned versions from build-logic"
+            exit 1
+          fi
+          openssl_line="${pinned_openssl%.*}" # e.g. 3.5: stay on the pinned LTS line
+
+          latest_sqlcipher="$(gh api repos/sqlcipher/sqlcipher/releases/latest --jq '.tag_name' | sed 's/^v//')"
+          latest_openssl="$(gh api --paginate 'repos/openssl/openssl/releases?per_page=100' \
+            --jq ".[] | select(.prerelease == false and .draft == false) | .tag_name" \
+            | sed -nE "s/^openssl-(${openssl_line//./\\.}\.[0-9]+)$/\1/p" | sort -V | tail -n1)"
+
+          echo "SQLCipher: pinned $pinned_sqlcipher, latest $latest_sqlcipher"
+          echo "OpenSSL $openssl_line: pinned $pinned_openssl, latest $latest_openssl"
+          {
+            echo "### Upstream versions"
+            echo "| Component | Pinned | Latest |"
+            echo "|---|---|---|"
+            echo "| SQLCipher | $pinned_sqlcipher | $latest_sqlcipher |"
+            echo "| OpenSSL $openssl_line | $pinned_openssl | $latest_openssl |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$2" ]; }
+
+          gh label create upstream --repo "$REPO" --color B60205 \
+            --description "A bundled native dependency has a newer release" --force > /dev/null
+
+          open_issue() { # component pinned latest release-url
+            local title="Upstream: $1 $3 is available (pinned $2)"
+            if gh issue list --repo "$REPO" --state all --label upstream --search "\"$title\" in:title" \
+                --json title --jq '.[].title' | grep -Fxq "$title"; then
+              echo "An issue already exists: $title"
+              return
+            fi
+            gh issue create --repo "$REPO" --label upstream --title "$title" --body "$(cat <<EOF
+          $1 **$3** has been released; Sealite bundles **$2**.
+
+          Release notes: $4
+
+          Checklist:
+          - [ ] Read the release notes and any security advisories; decide how urgent the update is.
+          - [ ] Update the pinned version and sha256 in build-logic (and the PGP check for OpenSSL).
+          - [ ] Run the full CI (every platform) and the golden-file compatibility tests.
+          - [ ] Update the versions table in README.md and release a patch version of Sealite.
+          EOF
+          )"
+          }
+
+          if newer "$pinned_sqlcipher" "$latest_sqlcipher"; then
+            open_issue "SQLCipher" "$pinned_sqlcipher" "$latest_sqlcipher" \
+              "https://github.com/sqlcipher/sqlcipher/releases/tag/v$latest_sqlcipher"
+          fi
+          if [ -n "$latest_openssl" ] && newer "$pinned_openssl" "$latest_openssl"; then
+            open_issue "OpenSSL" "$pinned_openssl" "$latest_openssl" \
+              "https://github.com/openssl/openssl/releases/tag/openssl-$latest_openssl"
+          fi

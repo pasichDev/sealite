@@ -5,9 +5,9 @@ package io.github.pasichdev.sealite.internal
 
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.SQLiteException
-import androidx.sqlite.throwSQLiteException
 import io.github.pasichdev.sealite.SealiteConfig
 import io.github.pasichdev.sealite.SealiteError
+import io.github.pasichdev.sealite.SealiteException
 import io.github.pasichdev.sealite.SealiteKey
 
 /**
@@ -22,10 +22,10 @@ internal object OpenSequence {
     /** A keyed, verified handle for [io.github.pasichdev.sealite.Sealite]'s maintenance calls. */
     fun openVerified(fileName: String, flags: Int, key: SealiteKey, config: SealiteConfig): RawDb {
         if (isPlaintextDatabase(fileName)) {
-            throwSQLiteException(
-                SQLITE_NOTADB,
-                "${SealiteError.NOT_ENCRYPTED.token}: an unencrypted SQLite database (or a SQLCipher file " +
-                    "with a plaintext header, which Sealite does not support)",
+            throw SealiteException(
+                SealiteError.NOT_ENCRYPTED,
+                "an unencrypted SQLite database (or a SQLCipher file with a plaintext header, which " +
+                    "Sealite does not open)",
             )
         }
         val db = rawOpen(fileName, flags)
@@ -53,7 +53,7 @@ internal object OpenSequence {
             // Backstop against a wiped buffer: close() zero-fills the whole key material (the raw
             // literal included), so all-zero bytes mean a key was used after being wiped. All-zero
             // raw keys supplied by the caller are rejected earlier, in SealiteKey.raw.
-            if (bytes.all { it == 0.toByte() }) throwSQLiteException(SQLITE_MISUSE, "the key is all zero bytes")
+            check(bytes.any { it != 0.toByte() }) { "The key material was wiped before use" }
             db.key(bytes)
         } finally {
             bytes.wipe()
@@ -70,6 +70,10 @@ internal object OpenSequence {
         config.pageSize?.let { db.exec("PRAGMA cipher_page_size = $it") }
         // Library-wide in SQLCipher and one-way (it can be turned on, never off): always on.
         db.exec("PRAGMA cipher_memory_security = ON")
+        // Last, after every cipher setting and before verify reads page 1: codec errors (a wrong
+        // key, for one) are not logged to stderr. Earlier, it would make SQLCipher read the file
+        // with default settings before the configured ones apply.
+        db.exec("PRAGMA cipher_log_level = NONE")
     }
 
     /**
@@ -81,30 +85,23 @@ internal object OpenSequence {
      * 3. `cipher_status` (SQLCipher 4.12+) must be 1: the handle is keyed and its codec is not in
      *    an error state. Checked after 2 so a wrong key is still reported as such.
      */
+    // One throw per distinct, documented refusal (no encryption, wrong key, not keyed).
+    @Suppress("ThrowsCount")
     fun verify(db: RawDb) {
         val cipherVersion = db.queryString("PRAGMA cipher_version")
         if (cipherVersion.isNullOrEmpty()) {
-            throwSQLiteException(
-                SQLITE_MISUSE,
-                "${SealiteError.PROVIDER_MISSING.token}: the linked SQLite has no encryption",
-            )
+            throw SealiteException(SealiteError.PROVIDER_MISSING, "the linked SQLite has no encryption")
         }
         try {
             db.queryString("SELECT count(*) FROM sqlite_schema")
         } catch (e: SQLiteException) {
             if (e.isNotADatabase()) {
-                throwSQLiteException(
-                    SQLITE_NOTADB,
-                    "${SealiteError.WRONG_KEY.token}: the key does not open this database",
-                )
+                throw SealiteException(SealiteError.WRONG_KEY, "the key does not open this database", e)
             }
             throw e
         }
         if (db.queryString("PRAGMA cipher_status") != "1") {
-            throwSQLiteException(
-                SQLITE_MISUSE,
-                "${SealiteError.NOT_KEYED.token}: the connection is not using encryption",
-            )
+            throw SealiteException(SealiteError.NOT_KEYED, "the connection is not using encryption")
         }
     }
 
@@ -117,15 +114,17 @@ internal object OpenSequence {
     // Our bindings (ported from androidx) report "Error code: <n>, message: …"; extended codes
     // keep the primary code in the low byte.
     private fun SQLiteException.isNotADatabase(): Boolean {
-        val code =
-            message?.let {
-                Regex("""Error code: (\d+)""")
-                    .find(it)
-                    ?.groupValues
-                    ?.get(1)
-                    ?.toIntOrNull()
-            }
+        val code = errorCodeOf(message)
         return code != null && (code and 0xFF) == SQLITE_NOTADB
+    }
+
+    private val ERROR_CODE = Regex("""Error code: (\d+)""")
+
+    /** The `<n>` of `Error code: <n>` in [message], or null when there is none. */
+    internal fun errorCodeOf(message: String?): Int? {
+        if (message == null) return null
+        val match = ERROR_CODE.find(message) ?: return null
+        return match.groupValues[1].toIntOrNull()
     }
 }
 

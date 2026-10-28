@@ -8,6 +8,7 @@ import io.github.pasichdev.sealite.build.GenerateRenameHeaderTask
 import io.github.pasichdev.sealite.build.NativeFlags
 import io.github.pasichdev.sealite.build.VerifyNativeExportsTask
 import io.github.pasichdev.sealite.build.VerifyStaticSymbolsTask
+import org.gradle.internal.os.OperatingSystem
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import org.jetbrains.kotlin.konan.target.KonanTarget
 
@@ -37,16 +38,22 @@ val fetchSqlCipher =
 
 // ---- Prebuilt natives (CI) ----------------------------------------------------------------------
 // -Psealite.prebuiltNatives=<dir> skips every JNI/OpenSSL compilation and takes the libraries from
-// <dir>, laid out as `collectNativesForCi` writes (and natives.yml uploads) them:
+// <dir>, laid out as `collectNativesForCi` writes (and _natives.yml uploads) them:
 //   <dir>/jvm/natives/<os>_<arch>/{lib, lib.sha256}     JVM resources
 //   <dir>/android/jniLibs/<abi>/libsealite_jni.so       Android jniLibs
-// The Apple static libraries (cinterop) are always built here: they are not part of that layout.
+//   <dir>/apple/<target>/libsealite.a                   Apple static libraries (cinterop)
+//   <dir>/apple/include/{sqlite3.h, sealite_rename.h}   the headers those libraries were built with
+// Without <dir>/apple the Apple static libraries are built here, which needs a Mac. On any other host
+// the Apple targets are disabled, so nothing Apple-related is wired in (no Xcode tool is reachable).
 val prebuiltNatives: File? =
     providers
         .gradleProperty("sealite.prebuiltNatives")
         .orNull
         ?.let { File(it).absoluteFile }
         ?.also { require(it.isDirectory) { "-Psealite.prebuiltNatives: $it is not a directory" } }
+
+val appleHost = OperatingSystem.current().isMacOsX
+val prebuiltApple: File? = prebuiltNatives?.resolve("apple")?.takeIf { it.isDirectory }
 
 val generateRenameHeader =
     tasks.register<GenerateRenameHeaderTask>("generateRenameHeader") {
@@ -171,51 +178,87 @@ val appleNativeTargets =
 
 val appleStaticFlags = NativeFlags.amalgamation("SQLCIPHER_CRYPTO_CC")
 
+// What `collectNativesForCi` ships as <dir>/apple: the static libraries and the headers they were built with.
+val stageAppleForCi =
+    tasks.register<Sync>("stageAppleForCi") {
+        group = "native"
+        description = "Collects libsealite.a for every Apple target and the headers they were built with."
+        into(nativeBuild.map { it.dir("apple-out") })
+        into("include") {
+            from(fetchSqlCipher.flatMap { it.amalgamationDir }) { include("sqlite3.h") }
+            from(generateRenameHeader.flatMap { it.header })
+        }
+    }
+
 kotlin.targets.withType<KotlinNativeTarget>().configureEach {
     val apple = appleNativeTargets[konanTarget] ?: return@configureEach
 
-    val build =
-        tasks.register<BuildStaticLibraryTask>("buildStatic${apple.taskSuffix}") {
-            group = "native"
-            description = "Builds the static libsealite.a for ${apple.dirName}."
-            amalgamationDir.set(fetchSqlCipher.flatMap { it.amalgamationDir })
-            renameHeader.set(generateRenameHeader.flatMap { it.header })
-            sdk.set(apple.sdk)
-            targetArgs.set(listOf("--target=${apple.triple}"))
-            amalgamationFlags.set(appleStaticFlags)
-            workDir.set(nativeBuild.map { it.dir("${apple.dirName}-obj") })
-            library.set(nativeBuild.map { it.file("${apple.dirName}/libsealite.a") })
+    // Where the cinterop finds libsealite.a and the headers: the prebuilt ones, the ones built here
+    // (Mac), or, on a host that can not run the Apple tasks anyway, the paths those tasks would use.
+    val libraryDir: Provider<File>
+    val includeDirs: Provider<List<File>>
+    val verify: TaskProvider<VerifyStaticSymbolsTask>?
+    if (prebuiltApple != null) {
+        libraryDir = provider { prebuiltApple.resolve(apple.dirName) }
+        includeDirs = provider { listOf(prebuiltApple.resolve("include")) }
+        verify = null
+    } else {
+        val build =
+            tasks.register<BuildStaticLibraryTask>("buildStatic${apple.taskSuffix}") {
+                group = "native"
+                description = "Builds the static libsealite.a for ${apple.dirName}."
+                amalgamationDir.set(fetchSqlCipher.flatMap { it.amalgamationDir })
+                renameHeader.set(generateRenameHeader.flatMap { it.header })
+                sdk.set(apple.sdk)
+                targetArgs.set(listOf("--target=${apple.triple}"))
+                amalgamationFlags.set(appleStaticFlags)
+                workDir.set(nativeBuild.map { it.dir("${apple.dirName}-obj") })
+                library.set(nativeBuild.map { it.file("${apple.dirName}/libsealite.a") })
+            }
+        verify =
+            tasks.register<VerifyStaticSymbolsTask>("verifyStaticSymbols${apple.taskSuffix}") {
+                group = "verification"
+                description = "Fails if libsealite.a for ${apple.dirName} defines a symbol without the sealite_ prefix."
+                library.set(build.flatMap { it.library })
+                report.set(nativeBuild.map { it.file("${apple.dirName}-symbols.txt") })
+            }
+        libraryDir = nativeBuild.map { it.dir(apple.dirName).asFile }
+        // sqlite3.h from the amalgamation (not the SDK's), and the rename header it is parsed with.
+        includeDirs =
+            provider {
+                listOf(
+                    fetchSqlCipher
+                        .flatMap { it.amalgamationDir }
+                        .get()
+                        .asFile,
+                    generateRenameHeader
+                        .flatMap { it.header }
+                        .get()
+                        .asFile.parentFile,
+                )
+            }
+        if (appleHost) {
+            tasks.named("check") { dependsOn(verify) }
+            stageAppleForCi.configure {
+                into(apple.dirName) { from(build.flatMap { it.library }) }
+                dependsOn(verify)
+            }
         }
-
-    val verify =
-        tasks.register<VerifyStaticSymbolsTask>("verifyStaticSymbols${apple.taskSuffix}") {
-            group = "verification"
-            description = "Fails if libsealite.a for ${apple.dirName} defines a symbol without the sealite_ prefix."
-            library.set(build.flatMap { it.library })
-            report.set(nativeBuild.map { it.file("${apple.dirName}-symbols.txt") })
-        }
-    tasks.named("check") { dependsOn(verify) }
+    }
 
     compilations.getByName("main").cinterops.create("sealite") {
-        // sqlite3.h from the amalgamation (not the SDK's), and the rename header it is parsed with.
-        includeDirs(
-            fetchSqlCipher.flatMap { it.amalgamationDir }.get().asFile,
-            generateRenameHeader
-                .flatMap { it.header }
-                .get()
-                .asFile.parentFile,
-        )
+        includeDirs(*includeDirs.get().toTypedArray())
         extraOpts(
             "-libraryPath",
-            build
-                .flatMap {
-                    it.library
-                }.get()
-                .asFile.parentFile.absolutePath,
+            libraryDir.get().absolutePath,
             "-staticLibrary",
             "libsealite.a",
         )
-        tasks.named(interopProcessingTaskName) { dependsOn(verify) }
+        // Only a Mac runs the cinterop of an Apple target. Elsewhere the task is disabled, but Gradle
+        // still runs what it depends on, which would reach xcrun.
+        if (verify != null && appleHost) {
+            tasks.named(interopProcessingTaskName) { dependsOn(verify) }
+        }
     }
 
     // Test only: the system libsqlite3 next to libsealite.a (see SystemSqliteCoexistenceTest).

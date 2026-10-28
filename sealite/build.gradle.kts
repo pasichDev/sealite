@@ -9,7 +9,11 @@ plugins {
     id("sealite.packaging")
     id("sealite.publish")
     id("sealite.detekt")
+    id("sealite.coverage")
+    id("sealite.c-coverage")
+    id("sealite.asan")
     alias(libs.plugins.ksp)
+    alias(libs.plugins.cyclonedx)
 }
 
 // The golden databases of testdata/ as Kotlin constants, for the tests of every target.
@@ -59,6 +63,12 @@ dependencies {
 }
 
 tasks.withType<Test>().configureEach {
+    // JUnit Platform, so a hung test fails by itself instead of holding the runner until its job is
+    // cancelled: no single test may run longer than five minutes. SEPARATE_THREAD makes the timeout
+    // work for a test stuck in native code too (the test is reported failed and the run goes on).
+    useJUnitPlatform()
+    systemProperty("junit.jupiter.execution.timeout.default", "5m")
+    systemProperty("junit.jupiter.execution.timeout.thread.mode.default", "SEPARATE_THREAD")
     // The tests exercise the packaged-resource loading path; surface what happens.
     testLogging {
         events("passed", "skipped", "failed")
@@ -66,6 +76,13 @@ tasks.withType<Test>().configureEach {
     }
     // Native code runs in this JVM: be explicit about native access (JDK 24+ warns otherwise).
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+}
+
+// The runtime dependencies of the published artifacts. The vendored SQLCipher and OpenSSL are compiled
+// in and appear in no configuration: .github/scripts/sbom-vendored.sh adds them to the release SBOM.
+tasks.named<org.cyclonedx.gradle.CyclonedxDirectTask>("cyclonedxDirectBom") {
+    includeConfigs.set(listOf("jvmRuntimeClasspath", "androidRuntimeClasspath"))
+    includeBuildEnvironment.set(false)
 }
 
 dokka {
@@ -78,6 +95,35 @@ dokka {
             remoteLineSuffix.set("#L")
         }
     }
+}
+
+// The cache directory depends on environment variables (XDG_CACHE_HOME, LOCALAPPDATA) a test can
+// not set from inside the JVM. jvmTest runs without them; LoaderEnvironmentTest runs on its own,
+// once per environment, so that every branch of the lookup is measured.
+val loaderEnvironmentVariables = listOf("XDG_CACHE_HOME", "LOCALAPPDATA")
+val loaderEnvironments =
+    mapOf(
+        "Unset" to emptyMap(),
+        "Blank" to mapOf("XDG_CACHE_HOME" to "  ", "LOCALAPPDATA" to "/loader-env/local"),
+        "Set" to mapOf("XDG_CACHE_HOME" to "/loader-env/xdg", "LOCALAPPDATA" to "/loader-env/local"),
+    )
+tasks.named<Test>("jvmTest") {
+    filter.excludeTestsMatching("*LoaderEnvironmentTest")
+    loaderEnvironmentVariables.forEach { environment.remove(it) }
+}
+for ((name, variables) in loaderEnvironments) {
+    val envTest =
+        tasks.register<Test>("jvmLoaderEnvTest$name") {
+            group = "verification"
+            description = "LoaderEnvironmentTest with the cache variables $name."
+            val jvmTest = tasks.named<Test>("jvmTest").get()
+            testClassesDirs = jvmTest.testClassesDirs
+            classpath = jvmTest.classpath
+            filter.includeTestsMatching("*LoaderEnvironmentTest")
+            loaderEnvironmentVariables.forEach { environment.remove(it) }
+            variables.forEach { (key, value) -> environment(key, value) }
+        }
+    tasks.named("check") { dependsOn(envTest) }
 }
 
 // Broken KDoc links or a malformed Module.md fail the build instead of the release.

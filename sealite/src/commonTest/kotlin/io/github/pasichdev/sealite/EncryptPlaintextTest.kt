@@ -6,6 +6,15 @@ package io.github.pasichdev.sealite
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.SQLiteException
 import androidx.sqlite.execSQL
+import io.github.pasichdev.sealite.internal.exec
+import io.github.pasichdev.sealite.internal.rawOpen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -27,10 +36,30 @@ class EncryptPlaintextTest {
         paths.clear()
     }
 
+    private fun directoryOf(path: String): String =
+        path.substring(0, maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\')))
+
+    private fun temporaryFiles(path: String): List<String> =
+        listDirectory(directoryOf(path)).filter { ".sealite-" in it }
+
     private fun assertNoTemp(encryptedPath: String) {
-        for (suffix in listOf("", "-journal", "-wal", "-shm")) {
-            assertNull(readFileBytes("$encryptedPath.sealite-tmp$suffix"), "temp file left: $suffix")
+        assertEquals(emptyList(), temporaryFiles(encryptedPath), "temporary files left")
+    }
+
+    /** A plaintext database of some 15 MB: copying it takes long enough for another thread to act meanwhile. */
+    private fun bigPlaintext(path: String): Int {
+        val rows = 60_000
+        val db = rawOpen(path, 0x02 or 0x04) // READWRITE | CREATE, no key: a plain SQLite file
+        try {
+            db.exec("CREATE TABLE note (id INTEGER PRIMARY KEY, body TEXT NOT NULL)")
+            db.exec(
+                "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < $rows) " +
+                    "INSERT INTO note (body) SELECT hex(randomblob(100)) FROM c",
+            )
+        } finally {
+            db.close()
         }
+        return rows
     }
 
     private fun SQLiteConnection.schema(): List<String> = column(
@@ -191,13 +220,73 @@ class EncryptPlaintextTest {
     }
 
     @Test
-    fun aLeftoverTemporaryFileFromACrashIsReplaced() {
+    fun leftoversOfACrashAreLeftAloneAndNeverBlockOrGetPublished() {
         val plain = newPath()
         val encrypted = newPath()
         writeFileBytes(plain, PLAINTEXT_DATABASE)
-        writeFileBytes("$encrypted.sealite-tmp", byteArrayOf(9, 9, 9))
+        val name = encrypted.substring(directoryOf(encrypted).length + 1)
+        val leftovers =
+            listOf(".$name.sealite-tmp", ".$name.sealite-AAAA", ".$name.sealite-AAAA-journal").map {
+                (directoryOf(encrypted) + "/" + it).also { path -> writeFileBytes(path, byteArrayOf(9, 9, 9)) }
+            }
         Sealite.encryptPlaintext(plain, encrypted, rawKey(1))
         assertEquals(Sealite.CheckResult.Ok, Sealite.check(encrypted, rawKey(1)))
+        assertEquals(listOf("plain"), withDb(encrypted, rawKey(1)) { it.column("SELECT body FROM note") })
+        for (leftover in leftovers) assertContentEquals(byteArrayOf(9, 9, 9), readFileBytes(leftover), leftover)
+        assertEquals(leftovers.size, temporaryFiles(encrypted).size, "only the leftovers remain")
+    }
+
+    @Test
+    fun twoConcurrentMigrationsToOneTargetLeaveExactlyOneCompleteDatabase() = runTest {
+        repeat(3) {
+            val plain = newPath()
+            val encrypted = newPath()
+            val rows = bigPlaintext(plain)
+            val outcomes =
+                withContext(Dispatchers.Default) {
+                    coroutineScope {
+                        List(2) { async { runCatching { Sealite.encryptPlaintext(plain, encrypted, rawKey(1)) } } }
+                            .awaitAll()
+                    }
+                }
+            val failures = outcomes.mapNotNull { it.exceptionOrNull() }
+            assertEquals(1, outcomes.count { it.isSuccess }, "exactly one migration succeeds: $failures")
+            // The loser either saw the target while checking (IllegalArgumentException) or lost the
+            // race to publish it (IllegalStateException); it never overwrites or publishes a torn file.
+            val loser = failures.single()
+            assertTrue(loser is IllegalStateException || loser is IllegalArgumentException, loser.toString())
+            assertEquals(Sealite.CheckResult.Ok, Sealite.check(encrypted, rawKey(1)))
+            assertEquals(
+                rows.toString(),
+                withDb(encrypted, rawKey(1)) { it.scalar("SELECT count(*) FROM note") },
+            )
+            assertEquals("ok", withDb(encrypted, rawKey(1)) { it.scalar("PRAGMA integrity_check") })
+            assertNoTemp(encrypted)
+        }
+    }
+
+    @Test
+    fun aTargetCreatedBySomeoneElseMidwayIsNotOverwritten() = runTest {
+        val plain = newPath()
+        val encrypted = newPath()
+        bigPlaintext(plain)
+        val theirs = byteArrayOf(1, 2, 3, 4)
+        val failure =
+            withContext(Dispatchers.Default) {
+                coroutineScope {
+                    val migration = async { runCatching { Sealite.encryptPlaintext(plain, encrypted, rawKey(1)) } }
+                    val intruder =
+                        async {
+                            // The temporary file exists from the moment the copy starts.
+                            while (temporaryFiles(encrypted).isEmpty()) delay(1)
+                            writeFileBytes(encrypted, theirs)
+                        }
+                    intruder.await()
+                    migration.await().exceptionOrNull()
+                }
+            }
+        assertTrue(failure is IllegalStateException, failure.toString())
+        assertContentEquals(theirs, readFileBytes(encrypted), "someone else's file must stay")
         assertNoTemp(encrypted)
     }
 

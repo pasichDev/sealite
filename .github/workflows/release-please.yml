@@ -1,24 +1,19 @@
 name: release-please
 
 # Keeps a release PR open on main (version bump in gradle.properties + CHANGELOG.md, computed from
-# Conventional Commits). Merging it creates the tag and the GitHub release, and this workflow then
-# calls release.yml to build and publish.
+# Conventional Commits). Merging it creates the tag, and the tag push starts release.yml.
 #
-# release.yml is called instead of waiting for its tag trigger on purpose: events caused by the
-# default GITHUB_TOKEN (the tag release-please pushes) do not start other workflows. A personal access
-# token or GitHub App token for release-please would also work, but needs a secret to be rotated.
-#
-# For the same reason ci.yml and pr-title.yml do not run on the release PR that release-please opens
-# with the default token: do not make them required checks for that PR, or give release-please a
-# token of its own (`token:` input).
+# It runs with a token of its own (RELEASE_PLEASE_TOKEN, a fine-grained personal access token with
+# contents, pull requests and workflows write on this repository). Events caused by the default
+# GITHUB_TOKEN do not start other workflows, so with that token the CI would not run on the release PR
+# and the tag would not start the release. There is deliberately no fallback to GITHUB_TOKEN: a
+# release that silently skips its checks is worse than a release workflow that stops and says why.
 
 on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: release-please
@@ -26,24 +21,25 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
-    outputs:
-      release_created: ${{ steps.rp.outputs.release_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
+    permissions:
+      contents: read
     steps:
-      - id: rp
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
+          egress-policy: audit
+      - name: The release token is configured
+        env:
+          TOKEN_PRESENT: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+        run: |
+          if [ "${TOKEN_PRESENT}" != "true" ]; then
+            echo "::error title=RELEASE_PLEASE_TOKEN is missing::Add the repository secret RELEASE_PLEASE_TOKEN (a fine-grained personal access token for this repository with Contents, Pull requests and Workflows write). Without it the release PR gets no CI and the tag does not start release.yml."
+            exit 1
+          fi
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  release:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    permissions:
-      contents: write
-    uses: ./.github/workflows/release.yml
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-    secrets: inherit

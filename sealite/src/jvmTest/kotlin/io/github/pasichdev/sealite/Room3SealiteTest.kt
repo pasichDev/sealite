@@ -53,6 +53,7 @@ class Room3SealiteTest {
     private fun build(path: String, driver: SealiteDriver): Notes3Database = Room
         .databaseBuilder<Notes3Database>(name = path, factory = { Notes3Database_Impl() })
         .setDriver(driver)
+        .allowDataLossOnRecovery(true)
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()
 
@@ -89,6 +90,42 @@ class Room3SealiteTest {
             val db = build(path, driver)
             try {
                 assertEquals(2, runBlocking { db.notes().all() }.size)
+            } finally {
+                db.close()
+            }
+        }
+    }
+
+    @Test
+    fun aWrongKeyNeverMakesRoom3DeleteTheDatabaseEvenWithDataLossOnRecoveryAllowed() {
+        // build() allows data loss on recovery: Room 3 deletes the file only for a SQLiteException
+        // it reads as corruption. A wrong key is a SealiteException, so the file must stay.
+        val path = newTempDatabasePath().also { paths += it }
+        SealiteDriver(rawKey(1)).use { driver ->
+            val db = build(path, driver)
+            try {
+                runBlocking { db.notes().insert(Note3Entity(body = "precious")) }
+            } finally {
+                db.close()
+            }
+        }
+        val before = assertNotNull(readFileBytes(path))
+        repeat(3) {
+            SealiteDriver(rawKey(2)).use { driver ->
+                val db = build(path, driver)
+                try {
+                    val e = assertFailsWith<Throwable> { runBlocking { db.notes().all() } }
+                    assertEquals(SealiteError.WRONG_KEY, Sealite.errorOf(e), "Room 3 threw: $e")
+                } finally {
+                    db.close()
+                }
+            }
+            assertContentEquals(before, readFileBytes(path), "the database changed or was deleted")
+        }
+        SealiteDriver(rawKey(1)).use { driver ->
+            val db = build(path, driver)
+            try {
+                assertEquals(listOf("precious"), runBlocking { db.notes().all() }.map { it.body })
             } finally {
                 db.close()
             }

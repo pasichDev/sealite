@@ -4,6 +4,8 @@
 package io.github.pasichdev.sealite
 
 import androidx.sqlite.SQLiteException
+import io.github.pasichdev.sealite.internal.queryString
+import io.github.pasichdev.sealite.internal.rawOpen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -14,6 +16,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -87,9 +90,6 @@ class SealiteKeyTest {
 
     @Test
     fun closingTheDriverWhileManyThreadsOpenNeverKeysADatabaseWithZeros() = runTest {
-        // A passphrase of the form x'<hex>' is read by SQLCipher as a raw key: this one is the
-        // all-zero key a wiped buffer would produce.
-        val zeroKeyText = "x'" + "0".repeat(64) + "'"
         val rounds = 6
         val perRound = 24
         var successes = 0
@@ -123,25 +123,35 @@ class SealiteKeyTest {
                 }
             successes += outcomes.count { it }
             files.zip(outcomes).forEach { (file, ok) ->
-                val zero = { SealiteKey.passphrase(zeroKeyText.toCharArray()) }
                 if (ok) {
                     assertEquals(Sealite.CheckResult.Ok, Sealite.check(file, rawKey(7)), "opened with the real key")
-                    assertEquals(
-                        Sealite.CheckResult.WrongKey,
-                        Sealite.check(file, zero()),
-                        "must not open with a zero key",
-                    )
-                } else {
-                    // Nothing keyed with zeros may exist; an unwritten file is empty or missing.
-                    val bytes = readFileBytes(file)
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        assertEquals(Sealite.CheckResult.Ok, Sealite.check(file, rawKey(7)))
-                    }
-                    assertTrue(Sealite.check(file, zero()) != Sealite.CheckResult.NotEncrypted)
+                }
+                // Nothing keyed with zeros may exist; an unwritten file is empty or missing.
+                val bytes = readFileBytes(file)
+                if (bytes != null && bytes.isNotEmpty()) {
+                    assertEquals(Sealite.CheckResult.Ok, Sealite.check(file, rawKey(7)))
+                    assertFalse(opensWithZeroKey(file), "must not open with a zero key")
                 }
             }
             real.close()
         }
         assertNotNull(successes) // outcomes vary with scheduling; every one was checked above
+    }
+
+    /**
+     * True if [file] opens under the all-zero raw key (what a wiped buffer would produce).
+     * [SealiteKey.raw] refuses that key, so it goes straight to the binding.
+     */
+    private fun opensWithZeroKey(file: String): Boolean = try {
+        val db = rawOpen(file, 0x01) // READONLY
+        try {
+            db.key(("x'" + "0".repeat(64) + "'").encodeToByteArray())
+            db.queryString("SELECT count(*) FROM sqlite_schema")
+            true
+        } finally {
+            db.close()
+        }
+    } catch (_: SQLiteException) {
+        false
     }
 }
