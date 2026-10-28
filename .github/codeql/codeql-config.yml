@@ -1,0 +1,7 @@
+name: Sealite CodeQL configuration
+
+# Only the JNI glue is ours; see .github/workflows/codeql.yml.
+paths:
+  - sealite/src/native
+paths-ignore:
+  - '**/build/**'
