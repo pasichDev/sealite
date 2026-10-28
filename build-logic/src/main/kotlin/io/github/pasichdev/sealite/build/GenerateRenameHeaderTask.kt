@@ -4,6 +4,7 @@
 package io.github.pasichdev.sealite.build
 
 import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
@@ -52,6 +53,13 @@ abstract class GenerateRenameHeaderTask
 
         @TaskAction
         fun run() {
+            if (!System.getProperty("os.name").startsWith("Mac")) {
+                throw GradleException(
+                    "Building the Sealite natives needs macOS (Xcode's clang and SDK); this host is " +
+                        "${System.getProperty("os.name")}. Pass -Psealite.prebuiltNatives=<dir> with the output " +
+                        "of ':sealite:collectNativesForCi' (the 'natives' artifact of the CI) to use prebuilt libraries.",
+                )
+            }
             val dir = amalgamationDir.get().asFile
             val work = workDir.get().asFile.also { it.mkdirs() }
             val probe = work.resolve("probe.o")
