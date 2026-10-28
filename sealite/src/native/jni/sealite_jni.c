@@ -29,6 +29,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __ANDROID__
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "sealite_key.h"
 #include "sqlite3.h"
 
@@ -452,6 +459,80 @@ static void JNICALL nativeStatementClose(JNIEnv *env, jclass clazz, jlong stmtPo
     sqlite3_finalize(stmt);
 }
 
+#ifdef __ANDROID__
+/* ---- rename without replacing (Android only) ------------------------------------------------ */
+
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1 << 0)
+#endif
+#ifndef __NR_renameat2
+#if defined(__aarch64__)
+#define __NR_renameat2 276
+#elif defined(__arm__)
+#define __NR_renameat2 382
+#elif defined(__i386__)
+#define __NR_renameat2 353
+#elif defined(__x86_64__)
+#define __NR_renameat2 316
+#endif
+#endif
+
+/* A NUL-terminated copy of UTF-8 bytes with no embedded NUL, or NULL (and *error set). */
+static char *copyPathBytes(JNIEnv *env, jbyteArray bytes, int *error) {
+    jsize length = (*env)->GetArrayLength(env, bytes);
+    if (length < 1 || length > INT_MAX / 2) {
+        *error = EINVAL;
+        return NULL;
+    }
+    char *path = (char *) malloc((size_t) length + 1);
+    if (path == NULL) {
+        *error = ENOMEM;
+        return NULL;
+    }
+    (*env)->GetByteArrayRegion(env, bytes, 0, length, (jbyte *) path);
+    if ((*env)->ExceptionCheck(env)) {
+        free(path);
+        *error = EINVAL;
+        return NULL;
+    }
+    path[length] = '\0';
+    if (strlen(path) != (size_t) length) {
+        free(path);
+        *error = EINVAL;
+        return NULL;
+    }
+    return path;
+}
+
+/*
+ * renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE): renames only when `to` does not exist,
+ * atomically in the kernel. Returns 0, or the errno (EEXIST when `to` exists, EINVAL when the file
+ * system does not support the flag, ENOSYS when the kernel does not know the call). The raw system
+ * call is used because the library is built for API 24 and bionic exports renameat2 from API 30
+ * only. The caller must not call this below API 30: the seccomp filter of API 26 to 29 may kill the
+ * process on a system call it does not list.
+ */
+static jint JNICALL nativeRenameNoReplace(JNIEnv *env, jclass clazz, jbyteArray from, jbyteArray to) {
+    int error = 0;
+    char *fromPath = copyPathBytes(env, from, &error);
+    if (fromPath == NULL) return error;
+    char *toPath = copyPathBytes(env, to, &error);
+    if (toPath == NULL) {
+        free(fromPath);
+        return error;
+    }
+    long rc = syscall(__NR_renameat2, AT_FDCWD, fromPath, AT_FDCWD, toPath, RENAME_NOREPLACE);
+    int result = rc == 0 ? 0 : errno;
+    free(fromPath);
+    free(toPath);
+    return result;
+}
+
+static const JNINativeMethod sRenameMethods[] = {
+    {"nativeRenameNoReplace", "([B[B)I", (void *) nativeRenameNoReplace},
+};
+#endif
+
 /* ---- registration -------------------------------------------------------------------------- */
 
 static const JNINativeMethod sConnectionMethods[] = {
@@ -513,6 +594,11 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
                          statementMethodCount) != JNI_OK) {
         return JNI_ERR;
     }
+#ifdef __ANDROID__
+    if (register_methods(env, "io/github/pasichdev/sealite/internal/NativeRenameKt", sRenameMethods, 1) != JNI_OK) {
+        return JNI_ERR;
+    }
+#endif
 
     return JNI_VERSION_1_6;
 }

@@ -21,9 +21,10 @@ kover {
                 // Generated: the build-info constant and the embedded golden fixtures.
                 classes("io.github.pasichdev.sealite.BuildInfo*")
                 // The Android actuals sit on the JVM report's class path but are not run by the JVM
-                // tests (the emulator job covers them): FileOps_androidKt, and the Android
+                // tests (the emulator job covers them): FileOps_androidKt, NativeRenameKt, and the Android
                 // NativeLibraryLoader, which shares its class name with the JVM one.
                 classes("io.github.pasichdev.sealite.internal.FileOps_androidKt")
+                classes("io.github.pasichdev.sealite.internal.NativeRenameKt")
             }
         }
         total {

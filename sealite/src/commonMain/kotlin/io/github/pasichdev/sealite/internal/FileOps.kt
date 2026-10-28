@@ -17,8 +17,9 @@ internal expect fun createUniqueFileNextTo(path: String): String
  * Makes the complete file [from] appear under [to] and removes [from], never replacing an existing
  * [to]. Throws [IllegalStateException] if [to] exists. JVM and Apple: a hard link, which fails
  * atomically when [to] exists, with no fallback (a file system without hard links fails instead).
- * Android, where apps may not create hard links: an existence check and a rename under a lock that
- * every Sealite publish of [to] takes, across threads and processes.
+ * Android, where apps may not create hard links: `renameat2(RENAME_NOREPLACE)` on API 30 and later
+ * (atomic in the kernel), otherwise an existence check (without following symbolic links) and a
+ * rename under a lock that every Sealite publish of [to] takes, across threads and processes.
  */
 internal expect fun publishWithoutReplacing(from: String, to: String)
 
