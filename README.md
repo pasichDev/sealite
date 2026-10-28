@@ -1,8 +1,13 @@
 # Sealite
 
-[![CI](https://github.com/pasichdev/sealite/actions/workflows/ci.yml/badge.svg)](https://github.com/pasichdev/sealite/actions/workflows/ci.yml)
+[![CI](https://github.com/pasichDev/sealite/actions/workflows/ci.yml/badge.svg)](https://github.com/pasichDev/sealite/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.pasichdev/sealite)](https://central.sonatype.com/artifact/io.github.pasichdev/sealite)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.4.21-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20macOS%20%7C%20JVM%3A%20Windows%2C%20Linux%2C%20macOS-informational)](#supported-platforms)
+[![API docs](https://img.shields.io/badge/API-docs-blue)](https://pasichdev.github.io/sealite/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pasichDev/sealite/badge)](https://scorecard.dev/viewer/?uri=github.com/pasichDev/sealite)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/pasichdev)
 
 An encrypted `androidx.sqlite.SQLiteDriver` for Kotlin Multiplatform, built on
 [SQLCipher](https://www.zetetic.net/sqlcipher/) Community Edition. Room KMP (2.8.x and 3.x) and
@@ -241,8 +246,9 @@ including random bytes, is `WrongKey`.
 **`Sealite.rekey`** re-encrypts in place from `oldKey` to `newKey`. It needs the file to itself:
 close the `RoomDatabase` first. The file is locked exclusively for the whole operation, so a
 connection that holds a lock (an open transaction, a reader in WAL mode) makes it fail with
-`SQLITE_BUSY`. A merely idle connection holds no lock in the rollback-journal mode and does not stop
-it, so do not rely on that; it is then left with a stale key and its next read fails. A WAL is
+`REKEY_FAILED` (caused by `SQLITE_BUSY`). A merely idle connection holds no lock in the
+rollback-journal mode and does not stop it, so do not rely on that; it is then left with a stale
+key and its next read fails. A WAL is
 checkpointed before the key changes. After the commit the file is reopened with `newKey` and checked
 with `PRAGMA quick_check`.
 
@@ -255,18 +261,24 @@ the old key or entirely under the new one. Store keys accordingly:
 4. On start-up with a pending key: `Sealite.check` with `newKey`; if that is not `Ok`, `check` with
    `oldKey`.
 
-Failures: `WRONG_KEY` if `oldKey` does not open the file; `REKEY_FAILED` (or a plain `SQLITE_BUSY`)
-when it failed before the commit, so the file is still under `oldKey`; `REKEY_UNVERIFIED` when it
-failed after the commit, so the file is most likely under `newKey`, and you keep **both** keys until
-`Sealite.check` tells which one opens it.
+Failures are `SealiteException`s, never a raw `SQLiteException`: `WRONG_KEY` if `oldKey` does not
+open the file; `REKEY_FAILED` when it failed before the commit (the cause is the original failure,
+for example `SQLITE_BUSY`), so the file is still under `oldKey`; `REKEY_UNVERIFIED` when it failed
+after the commit, so the file is most likely under `newKey`, and you keep **both** keys until
+`Sealite.check` tells which one opens it. A missing or empty file is an `IllegalArgumentException`.
 
 **`Sealite.encryptPlaintext`** writes an encrypted copy of a plaintext database with
 `sqlcipher_export`. What is copied: the schema (tables, indexes, views, triggers), all rows,
 `AUTOINCREMENT` sequences, `user_version`, `application_id` and `auto_vacuum`. What is not: the
 journal mode (Room sets its own) and the page size (it comes from the `SealiteConfig`). The copy is
 built in a temporary file `<encrypted>.sealite-tmp` in one transaction, checked with
-`PRAGMA integrity_check`, and only then moved into place atomically: the destination either does not
-exist or is complete, and a failure removes the temporary file. It throws `IllegalArgumentException`
+`PRAGMA integrity_check`, and only then moved into place without ever replacing anything: the
+destination either does not exist or is complete, and a failure removes the temporary file. On the
+JVM and Apple platforms that is a hard link; on Android API 30 and later it is
+`renameat2(RENAME_NOREPLACE)`, atomic in the kernel. On Android API 24 to 29 it is a check and a rename
+under a lock that every Sealite migration to the same path takes (across threads and processes): that
+holds against every other Sealite publish, not against unrelated code of your app that writes the
+same path. It throws `IllegalArgumentException`
 without touching anything if the source is missing or not a plaintext database, or the destination
 or one of its `-journal`, `-wal` or `-shm` files already exists. The plaintext file is left as it is:
 delete it and its sidecar files once the copy is in use.
@@ -369,6 +381,13 @@ A SQLCipher or OpenSSL security release is followed by a patch release of Sealit
 ## Building and contributing
 
 See [CONTRIBUTING](CONTRIBUTING.md). Changes are tracked in [CHANGELOG](CHANGELOG.md).
+
+## Support
+
+Sealite is free and open source. If it is useful to you, you can support its maintenance (security
+updates of SQLCipher and OpenSSL, new platforms) on Ko-fi.
+
+[![Support Sealite on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/pasichdev)
 
 ## License
 
