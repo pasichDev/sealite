@@ -7,6 +7,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20macOS%20%7C%20JVM%3A%20Windows%2C%20Linux%2C%20macOS-informational)](#supported-platforms)
 [![API docs](https://img.shields.io/badge/API-docs-blue)](https://pasichdev.github.io/sealite/)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pasichDev/sealite/badge)](https://scorecard.dev/viewer/?uri=github.com/pasichDev/sealite)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16527/badge)](https://www.bestpractices.dev/projects/16527)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/pasichdev)
 
 An encrypted `androidx.sqlite.SQLiteDriver` for Kotlin Multiplatform, built on
