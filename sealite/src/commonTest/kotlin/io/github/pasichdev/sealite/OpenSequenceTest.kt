@@ -116,4 +116,12 @@ class OpenSequenceTest {
         assertEquals(null, OpenSequence.errorCodeOf("no code here"))
         assertEquals(null, OpenSequence.errorCodeOf("Error code: 99999999999"))
     }
+
+    @Test
+    fun aMessageReportsExactlyItsOwnCode() {
+        assertTrue(OpenSequence.reports("Error code: 776, message: attempt to write a readonly database", 776))
+        assertFalse(OpenSequence.reports("Error code: 8, message: attempt to write a readonly database", 776))
+        assertFalse(OpenSequence.reports("no code here", 776))
+        assertFalse(OpenSequence.reports(null, 776))
+    }
 }

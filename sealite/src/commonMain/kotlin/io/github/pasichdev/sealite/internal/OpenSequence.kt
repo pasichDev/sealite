@@ -126,6 +126,9 @@ internal object OpenSequence {
         val match = ERROR_CODE.find(message) ?: return null
         return match.groupValues[1].toIntOrNull()
     }
+
+    /** True when [message] reports exactly the result code [code] (extended codes are on). */
+    internal fun reports(message: String?, code: Int): Boolean = errorCodeOf(message) == code
 }
 
 internal fun RawDb.exec(sql: String) {

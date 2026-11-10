@@ -128,7 +128,7 @@ internal actual object NativeLibraryLoader {
             }
         check(expected.matches(Regex("[0-9a-f]{64}"))) { "Malformed checksum file for $libName" }
 
-        val dir = privateCacheDir() ?: freshPrivateDir()
+        val dir = privateCacheDir() ?: freshPrivateDir(libName)
         val target = File(dir, libName)
         // A planted symlink must not redirect the hash check or the load.
         if (Files.isSymbolicLink(target.toPath())) Files.delete(target.toPath())
@@ -210,11 +210,17 @@ internal actual object NativeLibraryLoader {
         return permissions == PosixFilePermissions.fromString("rwx------")
     }
 
-    /** A new directory only this process and user can use, for when the cache directory is unsafe. */
-    private fun freshPrivateDir(): File {
-        val dir = createPrivateTempDirectory()
-        dir.toFile().deleteOnExit()
-        return dir.toFile()
+    /**
+     * A new directory only this process and user can use, for when the cache directory is unsafe.
+     * Nothing else will ever use it, so it is removed with its library when the JVM exits.
+     */
+    private fun freshPrivateDir(libName: String): File {
+        val dir = createPrivateTempDirectory().toFile()
+        // Deleted in reverse order of registration: the library first, because a directory is only
+        // removed once it is empty.
+        dir.deleteOnExit()
+        File(dir, libName).deleteOnExit()
+        return dir
     }
 
     // The Windows branch (no POSIX attributes) can not run on the hosts that measure coverage.
