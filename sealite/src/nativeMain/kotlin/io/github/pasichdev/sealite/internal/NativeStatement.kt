@@ -199,6 +199,10 @@ internal class NativeStatement(
     }
 
     override fun clearBindings() = locked {
+        // The current row of a running statement can point at a bound value without copying it;
+        // freeing the binding would leave getText / getBlob reading freed memory. End the run first:
+        // the row is then refused ("no row") instead of read.
+        if (sealite_sqlite3_stmt_busy(stmtPointer) != 0) sealite_sqlite3_reset(stmtPointer)
         val resultCode = sealite_sqlite3_clear_bindings(stmtPointer)
         if (resultCode != SQLITE_OK) {
             throwSQLiteException(resultCode, dbPointer.getErrorMsg())

@@ -448,6 +448,10 @@ static void JNICALL nativeReset(JNIEnv *env, jclass clazz, jlong stmtPointer) {
 
 static void JNICALL nativeClearBindings(JNIEnv *env, jclass clazz, jlong stmtPointer) {
     sqlite3_stmt *stmt = (sqlite3_stmt *) (intptr_t) stmtPointer;
+    /* The current row of a running statement can point at a bound value without copying it; freeing
+     * the binding would leave getText / getBlob reading freed memory. End the run first: the row is
+     * then refused ("no row") instead of read. */
+    if (sqlite3_stmt_busy(stmt) != 0) sqlite3_reset(stmt);
     int rc = sqlite3_clear_bindings(stmt);
     if (rc != SQLITE_OK) {
         throwSQLiteExceptionFromDb(env, rc, sqlite3_db_handle(stmt));
