@@ -271,7 +271,10 @@ abstract class BuildOpenSslTask
             val build = work.resolve("build").also { it.mkdirs() }
             exec.runLogged(
                 listOf("perl", src.resolve("Configure").path, t.opensslTarget) + configureOptions.get() +
-                    tc.opensslConfigureArgs,
+                    tc.opensslConfigureArgs +
+                    // Last on the command line, so it wins over the -O3 of the target definition. The hot
+                    // loops (AES, SHA, PBKDF2) are assembly and do not care.
+                    "-Os",
                 build,
                 env,
                 work.resolve("configure.log"),

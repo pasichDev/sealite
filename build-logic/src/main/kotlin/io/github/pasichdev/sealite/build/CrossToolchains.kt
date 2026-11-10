@@ -193,8 +193,11 @@ object CrossToolchains {
 
     // ---- Resolution ------------------------------------------------------------------------------
 
+    /** One section per function and per datum, so the linker's garbage collection can drop what nothing uses. */
+    private val sectionCompile = listOf("-ffunction-sections", "-fdata-sections")
+
     /** Compile flags of the Windows and Linux builds (OpenSSL, SQLCipher and the glue alike). */
-    private val hardenedCompile = listOf("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2", "-O2")
+    private val hardenedCompile = listOf("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2", "-O2") + sectionCompile
 
     /** Changes with the flags too, so a hardening change re-runs the builds. */
     private fun fingerprintOf(base: String, vararg flags: List<String>): String = "$base;flags=" +
@@ -207,10 +210,11 @@ object CrossToolchains {
             .toString(16)
 
     fun resolve(target: CrossTarget, rootDir: File, env: Map<String, String> = System.getenv()): CrossToolchain {
-        val elfLink = listOf("-Wl,--exclude-libs,ALL", "-Wl,-z,noexecstack", "-Wl,--strip-all")
+        val elfLink = listOf("-Wl,--exclude-libs,ALL", "-Wl,-z,noexecstack", "-Wl,--strip-all", "-Wl,--gc-sections")
         // Full RELRO: the GOT is read-only once the loader has relocated the library.
         val linuxLink = listOf("-shared", "-Wl,-z,relro,-z,now") + elfLink
         // ASLR (high-entropy for 64-bit address space) and DEP.
+        val androidLink = listOf("-shared", "-Wl,-z,max-page-size=16384", "-Wl,--no-undefined") + elfLink
         val windowsLink = listOf("-shared", "-static-libgcc", "-Wl,--dynamicbase,--nxcompat,--high-entropy-va")
         // The stack protector needs libssp; link its static archive, not the libssp-0.dll import library,
         // so the DLL has no dependency beyond the system libraries (VerifyCrossExportsTask checks that).
@@ -276,14 +280,15 @@ object CrossToolchains {
                     target = target,
                     cc = bin.resolve("${target.androidTriple}$ANDROID_API-clang"),
                     ar = bin.resolve("llvm-ar"),
-                    compileArgs = listOf("-fPIC"),
-                    linkArgs = listOf("-shared", "-Wl,-z,max-page-size=16384", "-Wl,--no-undefined") + elfLink,
+                    compileArgs = listOf("-fPIC") + sectionCompile,
+                    linkArgs = androidLink,
                     // libm / libdl / liblog are not linked implicitly into a shared library.
                     linkLibs = listOf("-llog", "-lm", "-ldl"),
                     opensslEnv = mapOf("ANDROID_NDK_ROOT" to ndk.path, "ANDROID_NDK_HOME" to ndk.path),
                     opensslPath = listOf(bin),
-                    opensslConfigureArgs = listOf("-D__ANDROID_API__=$ANDROID_API"),
-                    fingerprint = "ndk=${ndk.name};api=$ANDROID_API",
+                    opensslConfigureArgs = listOf("-D__ANDROID_API__=$ANDROID_API") + sectionCompile,
+                    fingerprint =
+                        fingerprintOf("ndk=${ndk.name};api=$ANDROID_API", sectionCompile, androidLink),
                 )
             }
         }
