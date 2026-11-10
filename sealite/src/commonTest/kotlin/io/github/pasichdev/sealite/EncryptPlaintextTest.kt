@@ -24,6 +24,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
+
+// runTest's default 60 s limit is wall-clock for these tests: they copy a 12 MB database on real
+// threads, which a 32-bit emulator under load takes longer than 60 s to do. A real hang is still
+// caught, by this limit and by the CI job's own watchdog.
+private val BIG_COPY_TIMEOUT = 5.minutes
 
 class EncryptPlaintextTest {
     private val paths = mutableListOf<String>()
@@ -237,7 +243,7 @@ class EncryptPlaintextTest {
     }
 
     @Test
-    fun twoConcurrentMigrationsToOneTargetLeaveExactlyOneCompleteDatabase() = runTest {
+    fun twoConcurrentMigrationsToOneTargetLeaveExactlyOneCompleteDatabase() = runTest(timeout = BIG_COPY_TIMEOUT) {
         repeat(3) {
             val plain = newPath()
             val encrypted = newPath()
@@ -285,7 +291,7 @@ class EncryptPlaintextTest {
     }
 
     @Test
-    fun aTargetCreatedBySomeoneElseMidwayIsNotOverwritten() = runTest {
+    fun aTargetCreatedBySomeoneElseMidwayIsNotOverwritten() = runTest(timeout = BIG_COPY_TIMEOUT) {
         val plain = newPath()
         val encrypted = newPath()
         bigPlaintext(plain)
