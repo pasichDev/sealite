@@ -67,7 +67,7 @@ page size). tvOS, watchOS and Linux/Windows native (non-JVM) targets are not off
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("io.github.pasichdev:sealite:1.0.0")
+            implementation("io.github.pasichdev:sealite:1.0.1")
         }
     }
 }
