@@ -11,7 +11,8 @@ import io.github.pasichdev.sealite.internal.OpenSequence
  * An [SQLiteDriver] whose every connection is SQLCipher-encrypted with a [SealiteKey].
  *
  * ```
- * val driver = SealiteDriver(SealiteKey.raw(dek))
+ * val driver = SealiteKey.raw(dek).use { SealiteDriver(it) } // closes the temporary key
+ * dek.fill(0)
  * val db = Room.databaseBuilder<AppDatabase>(name = path).setDriver(driver).build()
  * // shutdown: db.close(), then driver.close()
  * ```
