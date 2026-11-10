@@ -238,7 +238,7 @@ SQL that compiles to nothing (empty, whitespace or comments only) is rejected wi
 ### Maintenance: `Sealite`
 
 ```kotlin
-Sealite.check(path, key)                         // Ok | Missing | NotEncrypted | WrongKey, file untouched
+Sealite.check(path, key)                         // Ok | Missing | NotEncrypted | WrongKey
 Sealite.rekey(path, oldKey, newKey)              // change the key in place (close other connections first)
 Sealite.encryptPlaintext(plain, encrypted, key)  // encrypted copy of an unencrypted database
 Sealite.errorOf(throwable)                       // SealiteError? from any exception
@@ -248,9 +248,11 @@ Sealite.versions                                 // what is linked in, see below
 Every function has an overload that takes a `SealiteConfig`.
 
 `Sealite.check` lets the app branch before Room opens the file. It opens the file read-only and
-never writes to it (SQLite may still create a `-shm` file next to a WAL database); an empty file is
+does not write to it (SQLite may still create a `-shm` file next to a WAL database); an empty file is
 `Ok` (a new database), a plaintext header is `NotEncrypted`, and anything the key does not open,
-including random bytes, is `WrongKey`.
+including random bytes, is `WrongKey`. The one exception: if a crash left an unfinished transaction
+in a `-journal` file, SQLite has to roll it back before the database can be read, so `check` does
+that first, as the next open by anyone would, and then answers.
 
 **`Sealite.rekey`** re-encrypts in place from `oldKey` to `newKey`. It needs the file to itself:
 close the `RoomDatabase` first. The file is locked exclusively for the whole operation, so a
