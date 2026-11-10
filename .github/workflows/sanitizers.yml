@@ -1,0 +1,79 @@
+name: sanitizers
+
+# Weekly run of the JVM tests against a JNI library built with AddressSanitizer (SQLCipher and the glue)
+# and UBSan (the glue), on Linux x86-64: `jvmTestAsan`, see build-logic/.../sealite.asan.gradle.kts and
+# CONTRIBUTING.md. Any finding stops the process and fails the job (halt_on_error, -fno-sanitize-recover),
+# and the report is uploaded. Kept out of ci.yml: it is slow and not a required check.
+
+on:
+  schedule:
+    - cron: '47 2 * * 2'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sanitizers
+  cancel-in-progress: false
+
+jobs:
+  asan:
+    name: asan + ubsan (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      # clang 18 explicitly (the one Ubuntu 24.04 ships), and put it first on the PATH as plain `clang`,
+      # which is the name the Gradle task calls: the runner image may carry another default.
+      - name: Install clang 18, its sanitizer runtime, the OpenSSL headers and the tools that build SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-18 libclang-rt-18-dev libssl-dev make tcl
+          mkdir -p "${RUNNER_TEMP}/toolchain"
+          ln -s /usr/bin/clang-18 "${RUNNER_TEMP}/toolchain/clang"
+          echo "${RUNNER_TEMP}/toolchain" >> "$GITHUB_PATH"
+          "${RUNNER_TEMP}/toolchain/clang" --version
+      # The shipped natives come from the Mac job and are not used here: an empty prebuilt layout only
+      # keeps Gradle from trying to build them. The sanitizer library is built on this host.
+      - name: Tests against the sanitizer build
+        timeout-minutes: 50
+        env:
+          PREBUILT: ${{ runner.temp }}/no-natives
+        run: |
+          mkdir -p "${PREBUILT}/jvm/natives"
+          ./gradlew :sealite:jvmTestAsan -Psealite.prebuiltNatives="${PREBUILT}" --stacktrace
+      # With log_path set, a finding is written to asan.<pid> next to the test reports, so a red job
+      # always has the report to read.
+      - name: A finding fails the job even if Gradle did not
+        if: always()
+        run: |
+          if compgen -G "sealite/build/reports/asan/asan.*" > /dev/null; then
+            echo "::error::a sanitizer report was written"
+            head -n 80 sealite/build/reports/asan/asan.*
+            exit 1
+          fi
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-sanitizers
+          path: |
+            sealite/build/reports/asan
+            sealite/build/reports/tests
+            sealite/build/test-results
+          if-no-files-found: ignore
+          retention-days: 14
