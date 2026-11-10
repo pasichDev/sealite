@@ -7,16 +7,15 @@ name: codeql
 # Kotlin is not analysed: CodeQL supports Kotlin up to 2.4.20 and this project is on 2.4.21. When the
 # supported range reaches the project's version, add `java-kotlin` with `build-mode: manual` and a
 # step that runs `./gradlew :sealite:compileKotlinJvm` against a prebuilt-natives directory.
+#
+# Every pull request is analysed, not only those touching the glue, so each change merged into main
+# carries a CodeQL result (OpenSSF Scorecard's SAST check counts merged changes without one).
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    paths:
-      - 'sealite/src/native/**'
-      - '.github/codeql/**'
-      - '.github/workflows/codeql.yml'
   schedule:
     - cron: '23 4 * * 1'
 

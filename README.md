@@ -61,6 +61,7 @@ page size). tvOS, watchOS and Linux/Windows native (non-JVM) targets are not off
 
 ## Install
 
+<!-- x-release-please-start-version -->
 ```kotlin
 // build.gradle.kts of a Kotlin Multiplatform module
 kotlin {
@@ -71,6 +72,7 @@ kotlin {
     }
 }
 ```
+<!-- x-release-please-end -->
 
 `androidx.sqlite:sqlite` is an `api` dependency, so `SQLiteDriver` and the connection types are
 available without declaring it.
@@ -238,7 +240,7 @@ SQL that compiles to nothing (empty, whitespace or comments only) is rejected wi
 ### Maintenance: `Sealite`
 
 ```kotlin
-Sealite.check(path, key)                         // Ok | Missing | NotEncrypted | WrongKey, file untouched
+Sealite.check(path, key)                         // Ok | Missing | NotEncrypted | WrongKey
 Sealite.rekey(path, oldKey, newKey)              // change the key in place (close other connections first)
 Sealite.encryptPlaintext(plain, encrypted, key)  // encrypted copy of an unencrypted database
 Sealite.errorOf(throwable)                       // SealiteError? from any exception
@@ -248,9 +250,11 @@ Sealite.versions                                 // what is linked in, see below
 Every function has an overload that takes a `SealiteConfig`.
 
 `Sealite.check` lets the app branch before Room opens the file. It opens the file read-only and
-never writes to it (SQLite may still create a `-shm` file next to a WAL database); an empty file is
+does not write to it (SQLite may still create a `-shm` file next to a WAL database); an empty file is
 `Ok` (a new database), a plaintext header is `NotEncrypted`, and anything the key does not open,
-including random bytes, is `WrongKey`.
+including random bytes, is `WrongKey`. The one exception: if a crash left an unfinished transaction
+in a `-journal` file, SQLite has to roll it back before the database can be read, so `check` does
+that first, as the next open by anyone would, and then answers.
 
 **`Sealite.rekey`** re-encrypts in place from `oldKey` to `newKey`. It needs the file to itself:
 close the `RoomDatabase` first. The file is locked exclusively for the whole operation, so a
@@ -282,13 +286,26 @@ after the commit, so the file is most likely under `newKey`, and you keep **both
 journal mode (Room sets its own) and the page size (it comes from the `SealiteConfig`). The copy is
 built in one transaction in a new temporary file next to the destination, named
 `.<encrypted file name>.sealite-<random suffix>` (for `notes.db`, `.notes.db.sealite-` followed
-by random digits or letters), checked with `PRAGMA integrity_check`, and only then moved into place
-without ever replacing anything: the destination either does not exist or is complete. On the
-JVM and Apple platforms that is a hard link; on Android API 30 and later it is
-`renameat2(RENAME_NOREPLACE)`, atomic in the kernel. On Android API 24 to 29 it is a check and a rename
-under a lock that every Sealite migration to the same path takes (across threads and processes): that
-holds against every other Sealite publish, not against unrelated code of your app that writes the
-same path. It throws `IllegalArgumentException`
+by random digits or letters, created exclusively), checked with `PRAGMA integrity_check`, and only
+then moved into place without ever replacing anything: the destination either does not exist or is
+complete. When several Sealite migrations publish to one path, exactly one wins and the others
+throw (`IllegalArgumentException` if they saw the destination first, `IllegalStateException` if they lost the
+publish itself), leaving the winner's file and the sidecar files untouched.
+
+The guarantee against a file that something else creates at the destination depends on the platform:
+
+- JVM and Apple platforms, Android API 30 and later: **atomic no-replace.** A hard link on the JVM and
+  Apple, `renameat2(RENAME_NOREPLACE)` on Android; the kernel refuses to publish over a destination
+  that exists, whoever created it and whenever, including a writer that knows nothing about Sealite.
+- Android API 24 to 29 (and a file system or kernel without `renameat2`): **serialized against Sealite
+  only.** The check that the destination is absent and the `rename` run under a lock that every
+  Sealite publish of that path takes, across threads and processes (an in-process lock and a file lock
+  on `.<name>.sealite.lock`). No two Sealite publications can replace each other. Code that creates
+  the destination without taking that lock can do so between the check and the `rename`, and its file
+  is then replaced. If your app writes to the same path from elsewhere, do not run a migration to it
+  on those API levels at the same time.
+
+It throws `IllegalArgumentException`
 without touching anything if the source is missing or not a plaintext database, or the destination
 or one of its `-journal`, `-wal` or `-shm` files already exists. The plaintext file is left as it is:
 delete it and its sidecar files once the copy is in use.

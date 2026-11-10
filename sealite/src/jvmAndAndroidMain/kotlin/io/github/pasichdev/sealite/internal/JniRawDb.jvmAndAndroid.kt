@@ -22,6 +22,7 @@
 
 package io.github.pasichdev.sealite.internal
 
+import androidx.sqlite.SQLiteException
 import androidx.sqlite.SQLiteStatement
 import androidx.sqlite.throwSQLiteException
 import kotlinx.atomicfu.atomic
@@ -78,19 +79,36 @@ internal class JniRawDb(
         // Interrupt until the lock is free, not once: sqlite3_step clears a pending interrupt when it
         // starts with no other statement running, so one that lands in the instant between another
         // thread taking the lock and starting its step would be lost, and this wait as long as that
-        // whole query.
-        while (true) {
+        // whole query. No interrupt at all when nothing is running.
+        while (!lock.tryLock()) {
             nativeInterrupt(connectionPointer)
-            if (lock.tryLock()) break
             LockSupport.parkNanos(RETRY_NANOS)
         }
         try {
             statements.toList().forEach { it.finalizeLocked() }
             statements.clear()
-            closed = true
-            nativeClose(connectionPointer)
+            try {
+                clearPendingInterrupt()
+            } finally {
+                closed = true
+                nativeClose(connectionPointer)
+            }
         } finally {
             lock.unlock()
+        }
+    }
+
+    /**
+     * An interrupt stays pending until SQLite compiles or starts a statement with none running. Left
+     * pending, it makes `sqlite3_close_v2` give up the checkpoint of a WAL database: the rows stay in
+     * a `-wal` file that outlives the last connection. Must hold [lock], with every statement
+     * finalized.
+     */
+    private fun clearPendingInterrupt() {
+        try {
+            JniStatement(this, nativePrepare(connectionPointer, "SELECT 1")).finalizeLocked()
+        } catch (_: SQLiteException) {
+            // Out of memory at most: the handle is closed all the same.
         }
     }
 

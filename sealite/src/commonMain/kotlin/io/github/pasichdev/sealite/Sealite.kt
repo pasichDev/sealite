@@ -76,7 +76,10 @@ public object Sealite {
 
     /**
      * Tells whether [key] opens the database at [path] with [config]. The file is opened
-     * read-only and never written (SQLite may still create a `-shm` file next to a WAL database).
+     * read-only and not written (SQLite may still create a `-shm` file next to a WAL database),
+     * with one exception: when a crash left an unfinished transaction in a `-journal` file, SQLite
+     * can not read the database before rolling it back, so that happens here, as it would on the
+     * next open by anyone. The answer is then for the rolled-back file, whichever key was tried.
      */
     @JvmStatic
     public fun check(path: String, key: SealiteKey, config: SealiteConfig): CheckResult {
@@ -84,11 +87,23 @@ public object Sealite {
         if (header.isEmpty()) return CheckResult.Ok
         if (header.contentEquals(PLAINTEXT_HEADER)) return CheckResult.NotEncrypted
         return try {
-            OpenSequence.openVerified(path, OPEN_READONLY, key, config).close()
+            openForCheck(path, key, config).close()
             CheckResult.Ok
         } catch (e: SealiteException) {
             wrongKeyOrRethrow(e)
         }
+    }
+
+    /**
+     * Read-only, unless a crash left a hot journal next to the file: SQLite refuses to read such a
+     * database through a read-only connection (`SQLITE_READONLY_ROLLBACK`), so it is opened
+     * read-write, which rolls the unfinished transaction back as the next open by anyone would.
+     */
+    private fun openForCheck(path: String, key: SealiteKey, config: SealiteConfig): RawDb = try {
+        OpenSequence.openVerified(path, OPEN_READONLY, key, config)
+    } catch (e: SQLiteException) {
+        if (!OpenSequence.reports(e.message, SQLITE_READONLY_ROLLBACK)) throw e
+        OpenSequence.openVerified(path, OPEN_READWRITE, key, config)
     }
 
     // Any other error is defensive: a plaintext file is answered above, and a linked SQLite without
@@ -415,6 +430,7 @@ public object Sealite {
     private const val RAW_KEY_SIZE = 32
     private const val MAX_CAUSE_DEPTH = 16
     private const val SQLITE_BUSY = 5
+    private const val SQLITE_READONLY_ROLLBACK = 776 // SQLITE_READONLY | (3 << 8)
     private const val OPEN_READONLY = 0x00000001
     private const val OPEN_READWRITE = 0x00000002
     private const val OPEN_CREATE = 0x00000004

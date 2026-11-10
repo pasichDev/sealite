@@ -23,7 +23,8 @@ val db = Room.databaseBuilder<AppDatabase>(name = path)
 Without Room:
 
 ```kotlin
-SealiteDriver(SealiteKey.raw(databaseKey)).use { driver ->
+val driver = SealiteKey.raw(databaseKey).use { SealiteDriver(it) } // closes the temporary key
+driver.use {
     driver.open(path).use { connection ->
         connection.prepare("SELECT count(*) FROM sqlite_schema").use { it.step() }
     }
@@ -56,8 +57,9 @@ right key) stay `androidx.sqlite.SQLiteException`.
 
 ## Maintenance
 
-- `Sealite.check` tells, without writing, whether a key opens a file: `Ok`, `Missing`,
-  `NotEncrypted` or `WrongKey`.
+- `Sealite.check` tells whether a key opens a file: `Ok`, `Missing`, `NotEncrypted` or `WrongKey`.
+  It does not write, except to roll back a transaction that a crash left unfinished in a `-journal`
+  file.
 - `Sealite.rekey` changes the key in place and needs the file to itself. It is atomic: after a crash
   the file is entirely under the old or entirely under the new key. Persist the new key as pending
   before the call, make it current only after the call returned, and on a failure with
