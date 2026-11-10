@@ -25,10 +25,12 @@ import kotlin.test.assertTrue
 class BoundaryInputTest {
     private val flags = 0x02 or 0x04 // READWRITE | CREATE
 
-    private fun <T> withRawDb(block: (RawDb) -> T): T {
+    // Unit, not a generic result: test functions written as `= withRawDb { ... }` must return Unit,
+    // which Kotlin/Native and JUnit 4 on Android enforce (the JVM runner does not).
+    private fun withRawDb(block: (RawDb) -> Unit) {
         val db = rawOpen(":memory:", flags)
         try {
-            return block(db)
+            block(db)
         } finally {
             db.close()
         }

@@ -6,6 +6,7 @@ package io.github.pasichdev.sealite
 import androidx.sqlite.SQLiteException
 import io.github.pasichdev.sealite.internal.rawOpen
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -90,7 +91,10 @@ class CloseRaceTest {
             val random = Random(SEED + round)
             val db = rawOpen(":memory:", flags)
             val outcomes =
-                withContext(Dispatchers.Default) {
+                // IO, not Default: the runner and the preparer block their threads in native code, and
+                // on a two-core device Default has only two, so the closer would run only after the
+                // whole query had finished and the race under test would never happen.
+                withContext(Dispatchers.IO) {
                     coroutineScope {
                         val runner = async { runCatching { db.prepare(longQuery).use { it.step() } } }
                         val preparer =
