@@ -478,6 +478,21 @@ class BoundaryInputTest {
         db.stillWorks()
     }
 
+    private fun randomCall(s: androidx.sqlite.SQLiteStatement, random: Random) {
+        when (random.nextInt(11)) {
+            0, 1 -> s.step()
+            2 -> s.reset()
+            3 -> s.clearBindings()
+            4 -> s.bindLong(random.nextInt(-1, 3), 5L)
+            5 -> s.bindText(random.nextInt(-1, 3), "t\u0000\uD800")
+            6 -> s.getText(random.nextInt(-1, 3))
+            7 -> s.getBlob(random.nextInt(-1, 3))
+            8 -> s.isNull(random.nextInt(-1, 3))
+            9 -> s.close()
+            else -> s.getColumnName(random.nextInt(-1, 3))
+        }
+    }
+
     @Test
     fun scriptedOperationsOnStatementsAndAConnectionNeverEndInAnythingButAnSqliteException() {
         val sqls =
@@ -514,21 +529,7 @@ class BoundaryInputTest {
                             }
 
                             else -> {
-                                if (statements.isEmpty()) return@repeat
-                                val s = statements[random.nextInt(statements.size)]
-                                when (random.nextInt(11)) {
-                                    0 -> s.step()
-                                    1 -> s.step()
-                                    2 -> s.reset()
-                                    3 -> s.clearBindings()
-                                    4 -> s.bindLong(random.nextInt(-1, 3), 5L)
-                                    5 -> s.bindText(random.nextInt(-1, 3), "t\u0000\uD800")
-                                    6 -> s.getText(random.nextInt(-1, 3))
-                                    7 -> s.getBlob(random.nextInt(-1, 3))
-                                    8 -> s.isNull(random.nextInt(-1, 3))
-                                    9 -> s.close()
-                                    else -> s.getColumnName(random.nextInt(-1, 3))
-                                }
+                                statements.randomOrNull(random)?.let { randomCall(it, random) }
                             }
                         }
                     }

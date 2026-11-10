@@ -41,29 +41,28 @@ class CloseRaceTest {
                             List(4) { worker ->
                                 async {
                                     val rng = Random(SEED + round * 31 + worker)
-                                    val thrown = mutableListOf<Throwable>()
-                                    try {
-                                        while (true) {
-                                            yield() // the closer needs a thread of the pool too
-                                            val s = db.prepare("SELECT ?, ?, hex(zeroblob(64))")
-                                            try {
-                                                s.bindText(1, "w$worker\u0000\uD800")
-                                                s.bindBlob(2, rng.nextBytes(rng.nextInt(0, 256)))
-                                                while (s.step()) {
-                                                    s.getText(0)
-                                                    s.getBlob(1)
-                                                    s.getText(2)
+                                    // runCatching, not a catch: whatever stops the loop is the result.
+                                    val thrown =
+                                        runCatching {
+                                            while (true) {
+                                                yield() // the closer needs a thread of the pool too
+                                                val s = db.prepare("SELECT ?, ?, hex(zeroblob(64))")
+                                                try {
+                                                    s.bindText(1, "w$worker\u0000\uD800")
+                                                    s.bindBlob(2, rng.nextBytes(rng.nextInt(0, 256)))
+                                                    while (s.step()) {
+                                                        s.getText(0)
+                                                        s.getBlob(1)
+                                                        s.getText(2)
+                                                    }
+                                                    if (rng.nextBoolean()) s.reset()
+                                                    if (rng.nextBoolean()) s.clearBindings()
+                                                } finally {
+                                                    s.close()
                                                 }
-                                                if (rng.nextBoolean()) s.reset()
-                                                if (rng.nextBoolean()) s.clearBindings()
-                                            } finally {
-                                                s.close()
                                             }
-                                        }
-                                    } catch (e: Throwable) {
-                                        thrown += e
-                                    }
-                                    thrown
+                                        }.exceptionOrNull()
+                                    listOfNotNull(thrown)
                                 }
                             }
                         val closer =
