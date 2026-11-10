@@ -53,29 +53,46 @@ abstract class GenerateRenameHeaderTask
 
         @TaskAction
         fun run() {
-            if (!System.getProperty("os.name").startsWith("Mac")) {
+            val osName = System.getProperty("os.name")
+            val mac = osName.startsWith("Mac")
+            // Linux hosts build the sanitizer library only (sealite.asan); the shipped ones come from a Mac.
+            if (!mac && osName != "Linux") {
                 throw GradleException(
                     "Building the Sealite natives needs macOS (Xcode's clang and SDK); this host is " +
-                        "${System.getProperty("os.name")}. Pass -Psealite.prebuiltNatives=<dir> with the output " +
+                        "$osName. Pass -Psealite.prebuiltNatives=<dir> with the output " +
                         "of ':sealite:collectNativesForCi' (the 'natives' artifact of the CI) to use prebuilt libraries.",
                 )
             }
             val dir = amalgamationDir.get().asFile
             val work = workDir.get().asFile.also { it.mkdirs() }
             val probe = work.resolve("probe.o")
-            val sdk = ByteArrayOutputStream()
-            exec.exec {
-                commandLine("xcrun", "--sdk", "macosx", "--show-sdk-path")
-                standardOutput = sdk
-            }
-            val compileArgs =
-                listOf("clang") + compilerArgs.get() + listOf("-isysroot", sdk.toString().trim()) +
-                    compilerFlags.get()
+            val sdkArgs =
+                if (mac) {
+                    val sdk = ByteArrayOutputStream()
+                    exec.exec {
+                        commandLine("xcrun", "--sdk", "macosx", "--show-sdk-path")
+                        standardOutput = sdk
+                    }
+                    listOf("-isysroot", sdk.toString().trim())
+                } else {
+                    emptyList()
+                }
+            val compileArgs = listOf("clang") + compilerArgs.get() + sdkArgs + compilerFlags.get()
             val sourceArgs = listOf("-O0", "-w", "-c", dir.resolve("sqlite3.c").absolutePath)
             exec.exec { commandLine(compileArgs + sourceArgs + listOf("-o", probe.absolutePath)) }
             val nmOut = ByteArrayOutputStream()
             exec.exec {
-                commandLine("nm", "-gU", probe.absolutePath)
+                commandLine(
+                    if (mac) {
+                        listOf(
+                            "nm",
+                            "-gU",
+                            probe.absolutePath,
+                        )
+                    } else {
+                        listOf("nm", "-g", "--defined-only", probe.absolutePath)
+                    },
+                )
                 standardOutput = nmOut
             }
             // Mach-O symbols carry a leading underscore.
@@ -89,7 +106,7 @@ abstract class GenerateRenameHeaderTask
                             .split(Regex("\\s+"))
                             .takeIf { p -> p.size >= 3 }
                             ?.last()
-                    }.map { it.removePrefix("_") }
+                    }.map { if (mac) it.removePrefix("_") else it }
                     .toSet()
 
             val apiDeclaration =

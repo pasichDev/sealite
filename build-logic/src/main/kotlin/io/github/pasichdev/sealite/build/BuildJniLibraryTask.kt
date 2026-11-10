@@ -92,12 +92,20 @@ abstract class BuildJniLibraryTask
             val jniIncludes = listOf(jdk.resolve("include"), jdk.resolve("include").resolve(jniIncludeSubdir.get()))
             jniIncludes.forEach { if (!it.isDirectory) throw GradleException("No JNI headers at $it") }
 
-            val sysroot = capture("xcrun", "--sdk", "macosx", "--show-sdk-path").trim()
-            val common =
-                listOf("clang") + targetArgs.get() +
+            // An Apple SDK on a Mac; the system headers on a Linux host (the sanitizer build).
+            val mac = System.getProperty("os.name").startsWith("Mac")
+            val sysrootArgs =
+                if (mac) {
                     listOf(
                         "-isysroot",
-                        sysroot,
+                        capture("xcrun", "--sdk", "macosx", "--show-sdk-path").trim(),
+                    )
+                } else {
+                    emptyList()
+                }
+            val common =
+                listOf("clang") + targetArgs.get() + sysrootArgs +
+                    listOf(
                         "-fvisibility=hidden",
                         "-fPIC",
                         "-include",
@@ -163,7 +171,8 @@ abstract class BuildJniLibraryTask
                 commandLine(
                     listOf(
                         "clang",
-                    ) + targetArgs.get() + listOf("-isysroot", sysroot, "-dynamiclib", "-fvisibility=hidden") +
+                    ) + targetArgs.get() + sysrootArgs +
+                        listOf(if (mac) "-dynamiclib" else "-shared", "-fvisibility=hidden") +
                         objects.map { it.absolutePath } + linkArgs.get() + listOf("-o", lib.absolutePath),
                 )
             }

@@ -94,6 +94,33 @@ The Kotlin library code must stay at **100 % line and branch coverage** of the J
   against it and writes line and branch coverage of `sealite_jni.c` and `sealite_key.c` (not the
   SQLCipher amalgamation) to `sealite/build/reports/c-coverage/`.
 
+### Sanitizers
+
+The sanitizer run looks for memory errors in the C code. It is not part of `ci.yml` or of the required checks.
+
+**Sanitizer run** (`sanitizers.yml`, every Tuesday and on demand; locally `./gradlew :sealite:jvmTestAsan`,
+on a Mac with no other setup, on Linux with `-Psealite.prebuiltNatives=<dir>` where `<dir>/jvm/natives`
+may be empty). It builds the SQLCipher amalgamation and the JNI glue with AddressSanitizer, builds our own
+C (`sealite/src/native/jni`) also with UBSan (`-fno-sanitize-recover`), preloads the sanitizer runtime into
+the JVM and runs the whole JVM test suite against that library, including the boundary tests
+(`BoundaryInputTest`, `CloseRaceTest`: invalid SQL, U+0000, unpaired surrogates, empty and multi-megabyte
+values, long paths, statement and connection misuse, close racing prepare and step). A finding stops the
+process and fails the job; the report is uploaded as `reports-sanitizers`.
+
+What it covers: use-after-free, overflows and leaks of the glue and of SQLCipher/SQLite on Linux x86-64
+(and, locally, macOS arm64); undefined behaviour in the glue; every code path the shared tests reach.
+
+What it does not cover:
+
+- the shipped libraries are different builds: Windows, Android and Apple code, CommonCrypto, the static
+  OpenSSL of the release libraries and the Kotlin/Native bindings (`NativeRawDb`, `NativeStatement`) are not
+  sanitized. On Linux the system OpenSSL is linked and is not instrumented;
+- UBSan is off for the SQLite amalgamation, which trips it by design (for example a signed overflow when
+  a statement is bound at index `Int.MIN_VALUE`, wrapped before SQLite's own range check);
+- leak detection is off (the JVM would report its own allocations);
+- the tests choose the inputs: the sanitizer finds what they reach. 
+- Java and Kotlin memory safety, and races between threads (no ThreadSanitizer run).
+
 ## Before you open a pull request
 
 ```sh
@@ -133,6 +160,7 @@ ci.yml  (pull requests, main)
  `- ci-ok     fails unless every job above succeeded
 pr-title.yml  the pull request title is a Conventional Commit
 codeql.yml    CodeQL for the C glue
+sanitizers.yml  weekly: the JVM tests against an ASan + UBSan build (Linux)
 security.yml  zizmor, the linter for the workflows themselves
 scorecard.yml OpenSSF Scorecard
 release-please.yml, release.yml   see Releases

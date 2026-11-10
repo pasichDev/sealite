@@ -60,8 +60,10 @@ val generateRenameHeader =
         group = "native"
         description = "Generates sealite_rename.h (sqlite3_* / sqlcipher_* -> sealite_*)."
         amalgamationDir.set(fetchSqlCipher.flatMap { it.amalgamationDir })
-        compilerArgs.set(listOf("--target=arm64-apple-macosx11.0"))
-        compilerFlags.set(NativeFlags.amalgamation("SQLCIPHER_CRYPTO_CC") + "-DSQLITE_EXTRA_INIT=sqlcipher_extra_init")
+        compilerArgs.set(if (appleHost) listOf("--target=arm64-apple-macosx11.0") else emptyList())
+        // The probe only needs the declarations; a Linux host (the sanitizer build) has OpenSSL, not CommonCrypto.
+        val probeCrypto = if (appleHost) "SQLCIPHER_CRYPTO_CC" else "SQLCIPHER_CRYPTO_OPENSSL"
+        compilerFlags.set(NativeFlags.amalgamation(probeCrypto) + "-DSQLITE_EXTRA_INIT=sqlcipher_extra_init")
         prefix.set("sealite_")
         workDir.set(nativeBuild.map { it.dir("rename-probe") })
         header.set(nativeBuild.map { it.file("generated/sealite_rename.h") })
