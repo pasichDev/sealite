@@ -1,0 +1,56 @@
+name: fuzz-pr
+
+# ClusterFuzzLite, code-change mode: fuzzes the SQLCipher harness (fuzz/sealite_fuzz.c) for a few minutes
+# on pull requests that touch the native code or the fuzz setup, with AddressSanitizer and UBSan, and
+# fails on a crash or a sanitizer finding. Kept out of ci.yml: it is not part of the required checks.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sealite/src/native/**'
+      - 'fuzz/**'
+      - '.clusterfuzzlite/**'
+      - 'build-logic/src/main/kotlin/sealite.native.gradle.kts'
+      - '.github/workflows/fuzz-pr.yml'
+
+permissions: {}
+
+concurrency:
+  group: fuzz-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.sanitizer }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined]
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: c
+          sanitizer: ${{ matrix.sanitizer }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run the fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 300
+          mode: code-change
+          sanitizer: ${{ matrix.sanitizer }}
+          report-unreproducible-crashes: false
+          output-sarif: false

@@ -94,9 +94,9 @@ The Kotlin library code must stay at **100 % line and branch coverage** of the J
   against it and writes line and branch coverage of `sealite_jni.c` and `sealite_key.c` (not the
   SQLCipher amalgamation) to `sealite/build/reports/c-coverage/`.
 
-### Sanitizers
+### Sanitizers and fuzzing
 
-The sanitizer run looks for memory errors in the C code. It is not part of `ci.yml` or of the required checks.
+Two checks look for memory errors in the C code. Neither is part of `ci.yml` or of the required checks.
 
 **Sanitizer run** (`sanitizers.yml`, every Tuesday and on demand; locally `./gradlew :sealite:jvmTestAsan`,
 on a Mac with no other setup, on Linux with `-Psealite.prebuiltNatives=<dir>` where `<dir>/jvm/natives`
@@ -118,8 +118,19 @@ What it does not cover:
 - UBSan is off for the SQLite amalgamation, which trips it by design (for example a signed overflow when
   a statement is bound at index `Int.MIN_VALUE`, wrapped before SQLite's own range check);
 - leak detection is off (the JVM would report its own allocations);
-- the tests choose the inputs: the sanitizer finds what they reach. 
+- the tests choose the inputs: the sanitizer finds what they reach. The fuzzer below picks its own;
 - Java and Kotlin memory safety, and races between threads (no ThreadSanitizer run).
+
+**Fuzzing** (`fuzz-pr.yml`, `fuzz-batch.yml`; ClusterFuzzLite). `fuzz/sealite_fuzz.c` is a libFuzzer harness
+for the C layer without the JVM: it opens a temporary or in-memory SQLCipher database, keys it the way the
+library does (compatibility, KDF iterations, page size, key and rekey from the input), and prepares and
+steps SQL from the input with bound text, text16 and blob values. Pull requests that touch the native code
+fuzz for five minutes with AddressSanitizer and with UBSan; a weekly batch runs 50 minutes. The seed corpus
+is `fuzz/corpus`; the corpus found by a run is not stored between runs. Reproduce a crash with the
+`.clusterfuzzlite/build.sh` build (see the file for the variables it reads) and run the binary on the
+crashing input. A crash that is a bug of ours becomes a test in `BoundaryInputTest`; one in SQLite or
+SQLCipher goes upstream. The harness covers the SQLCipher layer, not the JNI glue (`sealite_jni.c`),
+which needs a JVM and is covered by the sanitizer run.
 
 ## Before you open a pull request
 
@@ -161,6 +172,7 @@ ci.yml  (pull requests, main)
 pr-title.yml  the pull request title is a Conventional Commit
 codeql.yml    CodeQL for the C glue
 sanitizers.yml  weekly: the JVM tests against an ASan + UBSan build (Linux)
+fuzz-pr.yml, fuzz-batch.yml  ClusterFuzzLite: the SQLCipher harness, five minutes per pull request, weekly batch
 security.yml  zizmor, the linter for the workflows themselves
 scorecard.yml OpenSSF Scorecard
 release-please.yml, release.yml   see Releases
