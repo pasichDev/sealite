@@ -162,6 +162,8 @@ internal class NativeRawDb(
 }
 
 internal actual fun rawOpen(fileName: String, flags: Int): RawDb = memScoped {
+    // The C string would end at the NUL and name a different file; the JNI binding refuses it too.
+    if ('\u0000' in fileName) throwSQLiteException(SQLITE_MISUSE, "database path must not contain NUL")
     val dbPointer = allocPointerTo<sqlite3>()
     val openResult = sealite_sqlite3_open_v2(filename = fileName, ppDb = dbPointer.ptr, flags = flags, zVfs = null)
     val db = dbPointer.value
