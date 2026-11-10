@@ -67,9 +67,11 @@ class SealiteCrossPlugin : Plugin<Project> {
                     opensslSha256.set(osslSha256)
                     toolchainFingerprint.set(fingerprint)
                     configureOptions.set(
-                        // no-autoload-config / no-module / no-dso: the static libcrypto never reads
-                        // openssl.cnf from disk and never dlopen()s a module or engine.
+                        // Keep only what SQLCipher's OpenSSL provider (crypto_openssl.c) calls: EVP AES-256-CBC,
+                        // HMAC through EVP_MAC with SHA-1/256/512, PKCS5_PBKDF2_HMAC, RAND_bytes, error strings.
+                        // Everything else is switched off. "no-ec" cascades to ecdsa/ecdh/ecx/sm2/gost.
                         listOf(
+                            // static, no tools, no config file, nothing loaded at runtime
                             "no-shared",
                             "no-tests",
                             "no-apps",
@@ -77,6 +79,70 @@ class SealiteCrossPlugin : Plugin<Project> {
                             "no-autoload-config",
                             "no-module",
                             "no-dso",
+                            "no-engine",
+                            "no-legacy",
+                            "no-deprecated",
+                            "no-async",
+                            "no-thread-pool",
+                            "no-default-thread-pool",
+                            "no-filenames",
+                            "no-trace",
+                            "no-ui-console",
+                            // protocols and what only they use
+                            "no-ssl",
+                            "no-tls",
+                            "no-dtls",
+                            "no-quic",
+                            "no-sock",
+                            "no-dgram",
+                            "no-ssl-trace",
+                            "no-nextprotoneg",
+                            "no-psk",
+                            "no-srp",
+                            "no-srtp",
+                            "no-comp",
+                            "no-http",
+                            // PKI and message formats
+                            "no-ocsp",
+                            "no-cms",
+                            "no-cmp",
+                            "no-ts",
+                            "no-ct",
+                            "no-rfc3779",
+                            // public-key algorithms (RSA has no switch in 3.x)
+                            "no-ec",
+                            "no-dh",
+                            "no-dsa",
+                            "no-ml-kem",
+                            "no-ml-dsa",
+                            "no-slh-dsa",
+                            // ciphers, digests, MACs, KDFs other than AES-CBC, SHA-1/2, HMAC, PBKDF2
+                            "no-sm3",
+                            "no-sm4",
+                            "no-camellia",
+                            "no-aria",
+                            "no-chacha",
+                            "no-poly1305",
+                            "no-des",
+                            "no-idea",
+                            "no-seed",
+                            "no-cast",
+                            "no-bf",
+                            "no-rc2",
+                            "no-rc4",
+                            "no-rc5",
+                            "no-md2",
+                            "no-md4",
+                            "no-mdc2",
+                            "no-rmd160",
+                            "no-whirlpool",
+                            "no-blake2",
+                            "no-siphash",
+                            "no-scrypt",
+                            "no-argon2",
+                            "no-siv",
+                            "no-ocb",
+                            "no-cmac",
                         ),
                     )
                     sourceDir.set(fetchOpenSsl.flatMap { it.sourceDir })
