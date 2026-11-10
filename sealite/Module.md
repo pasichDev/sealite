@@ -23,7 +23,8 @@ val db = Room.databaseBuilder<AppDatabase>(name = path)
 Without Room:
 
 ```kotlin
-SealiteDriver(SealiteKey.raw(databaseKey)).use { driver ->
+val driver = SealiteKey.raw(databaseKey).use { SealiteDriver(it) } // closes the temporary key
+driver.use {
     driver.open(path).use { connection ->
         connection.prepare("SELECT count(*) FROM sqlite_schema").use { it.step() }
     }

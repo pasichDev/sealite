@@ -61,6 +61,7 @@ page size). tvOS, watchOS and Linux/Windows native (non-JVM) targets are not off
 
 ## Install
 
+<!-- x-release-please-start-version -->
 ```kotlin
 // build.gradle.kts of a Kotlin Multiplatform module
 kotlin {
@@ -71,6 +72,7 @@ kotlin {
     }
 }
 ```
+<!-- x-release-please-end -->
 
 `androidx.sqlite:sqlite` is an `api` dependency, so `SQLiteDriver` and the connection types are
 available without declaring it.
