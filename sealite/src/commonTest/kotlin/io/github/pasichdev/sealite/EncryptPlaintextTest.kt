@@ -244,30 +244,34 @@ class EncryptPlaintextTest {
 
     @Test
     fun twoConcurrentMigrationsToOneTargetLeaveExactlyOneCompleteDatabase() = runTest(timeout = BIG_COPY_TIMEOUT) {
-        repeat(3) {
+        // The migrations only read the plaintext file, so one fixture serves every round: building it
+        // (60k rows, a sync to storage) cost as much as a migration and is not what is under test.
+        withStallReport("twoConcurrentMigrations") {
             val plain = newPath()
-            val encrypted = newPath()
             val rows = bigPlaintext(plain)
-            val outcomes =
-                withContext(Dispatchers.Default) {
-                    coroutineScope {
-                        List(2) { async { runCatching { Sealite.encryptPlaintext(plain, encrypted, rawKey(1)) } } }
-                            .awaitAll()
+            repeat(3) {
+                val encrypted = newPath()
+                val outcomes =
+                    withContext(Dispatchers.Default) {
+                        coroutineScope {
+                            List(2) { async { runCatching { Sealite.encryptPlaintext(plain, encrypted, rawKey(1)) } } }
+                                .awaitAll()
+                        }
                     }
-                }
-            val failures = outcomes.mapNotNull { it.exceptionOrNull() }
-            assertEquals(1, outcomes.count { it.isSuccess }, "exactly one migration succeeds: $failures")
-            // The loser either saw the target while checking (IllegalArgumentException) or lost the
-            // race to publish it (IllegalStateException); it never overwrites or publishes a torn file.
-            val loser = failures.single()
-            assertTrue(loser is IllegalStateException || loser is IllegalArgumentException, loser.toString())
-            assertEquals(Sealite.CheckResult.Ok, Sealite.check(encrypted, rawKey(1)))
-            assertEquals(
-                rows.toString(),
-                withDb(encrypted, rawKey(1)) { it.scalar("SELECT count(*) FROM note") },
-            )
-            assertEquals("ok", withDb(encrypted, rawKey(1)) { it.scalar("PRAGMA integrity_check") })
-            assertNoTemp(encrypted)
+                val failures = outcomes.mapNotNull { it.exceptionOrNull() }
+                assertEquals(1, outcomes.count { it.isSuccess }, "exactly one migration succeeds: $failures")
+                // The loser either saw the target while checking (IllegalArgumentException) or lost the
+                // race to publish it (IllegalStateException); it never overwrites or publishes a torn file.
+                val loser = failures.single()
+                assertTrue(loser is IllegalStateException || loser is IllegalArgumentException, loser.toString())
+                assertEquals(Sealite.CheckResult.Ok, Sealite.check(encrypted, rawKey(1)))
+                assertEquals(
+                    rows.toString(),
+                    withDb(encrypted, rawKey(1)) { it.scalar("SELECT count(*) FROM note") },
+                )
+                assertEquals("ok", withDb(encrypted, rawKey(1)) { it.scalar("PRAGMA integrity_check") })
+                assertNoTemp(encrypted)
+            }
         }
     }
 
@@ -297,17 +301,19 @@ class EncryptPlaintextTest {
         bigPlaintext(plain)
         val theirs = byteArrayOf(1, 2, 3, 4)
         val failure =
-            withContext(Dispatchers.Default) {
-                coroutineScope {
-                    val migration = async { runCatching { Sealite.encryptPlaintext(plain, encrypted, rawKey(1)) } }
-                    val intruder =
-                        async {
-                            // The temporary file exists from the moment the copy starts.
-                            while (temporaryFiles(encrypted).isEmpty()) delay(1)
-                            writeFileBytes(encrypted, theirs)
-                        }
-                    intruder.await()
-                    migration.await().exceptionOrNull()
+            withStallReport("aTargetCreatedBySomeoneElse") {
+                withContext(Dispatchers.Default) {
+                    coroutineScope {
+                        val migration = async { runCatching { Sealite.encryptPlaintext(plain, encrypted, rawKey(1)) } }
+                        val intruder =
+                            async {
+                                // The temporary file exists from the moment the copy starts.
+                                while (temporaryFiles(encrypted).isEmpty()) delay(1)
+                                writeFileBytes(encrypted, theirs)
+                            }
+                        intruder.await()
+                        migration.await().exceptionOrNull()
+                    }
                 }
             }
         assertTrue(failure is IllegalStateException, failure.toString())
