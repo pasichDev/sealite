@@ -7,6 +7,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20macOS%20%7C%20JVM%3A%20Windows%2C%20Linux%2C%20macOS-informational)](#supported-platforms)
 [![API docs](https://img.shields.io/badge/API-docs-blue)](https://pasichdev.github.io/sealite/)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pasichDev/sealite/badge)](https://scorecard.dev/viewer/?uri=github.com/pasichDev/sealite)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16527/badge)](https://www.bestpractices.dev/projects/16527)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/pasichdev)
 
 An encrypted `androidx.sqlite.SQLiteDriver` for Kotlin Multiplatform, built on
@@ -15,8 +16,9 @@ plain `androidx.sqlite` get an encrypted database on Android, iOS, macOS and the
 one line:
 
 ```kotlin
+val driver = SealiteKey.raw(databaseKey).use { SealiteDriver(it) } // the driver keeps its own copy
 Room.databaseBuilder<AppDatabase>(name = path)
-    .setDriver(SealiteDriver(SealiteKey.raw(databaseKey)))
+    .setDriver(driver)
     .build()
 ```
 
@@ -101,15 +103,19 @@ The driver interface is the same; only the Room package changes.
 ```kotlin
 import androidx.room3.Room
 
+val driver = SealiteKey.raw(key).use { SealiteDriver(it) } // closes the temporary key
+key.fill(0)
 val db = Room.databaseBuilder<AppDatabase>(name = path)
-    .setDriver(SealiteDriver(SealiteKey.raw(key)))
+    .setDriver(driver)
     .build()
 ```
 
 ### Without Room
 
 ```kotlin
-SealiteDriver(SealiteKey.raw(key)).use { driver ->
+val driver = SealiteKey.raw(key).use { SealiteDriver(it) }
+key.fill(0)
+driver.use {
     driver.open(path).use { connection ->
         connection.execSQL("CREATE TABLE IF NOT EXISTS note (id INTEGER PRIMARY KEY, body TEXT NOT NULL)")
         connection.prepare("SELECT count(*) FROM note").use { it.step(); println(it.getLong(0)) }
@@ -117,7 +123,10 @@ SealiteDriver(SealiteKey.raw(key)).use { driver ->
 }
 ```
 
-Shut down in this order: close the `RoomDatabase`, then the `SealiteDriver` (which wipes its key).
+Every `SealiteKey` factory copies its input and `SealiteDriver` copies the key again, so close the
+`SealiteKey` you created as soon as the driver exists, and wipe your own array: neither is needed
+after that, and the garbage collector does not wipe anything. Shut down in this order: close the
+`RoomDatabase`, then the `SealiteDriver` (which wipes its copy of the key).
 
 > [!NOTE]
 > **A wrong key never makes Room delete your database.** Room's corruption recovery
@@ -271,9 +280,10 @@ after the commit, so the file is most likely under `newKey`, and you keep **both
 `sqlcipher_export`. What is copied: the schema (tables, indexes, views, triggers), all rows,
 `AUTOINCREMENT` sequences, `user_version`, `application_id` and `auto_vacuum`. What is not: the
 journal mode (Room sets its own) and the page size (it comes from the `SealiteConfig`). The copy is
-built in a temporary file `<encrypted>.sealite-tmp` in one transaction, checked with
-`PRAGMA integrity_check`, and only then moved into place without ever replacing anything: the
-destination either does not exist or is complete, and a failure removes the temporary file. On the
+built in one transaction in a new temporary file next to the destination, named
+`.<encrypted file name>.sealite-<random suffix>` (for `notes.db`, `.notes.db.sealite-` followed
+by random digits or letters), checked with `PRAGMA integrity_check`, and only then moved into place
+without ever replacing anything: the destination either does not exist or is complete. On the
 JVM and Apple platforms that is a hard link; on Android API 30 and later it is
 `renameat2(RENAME_NOREPLACE)`, atomic in the kernel. On Android API 24 to 29 it is a check and a rename
 under a lock that every Sealite migration to the same path takes (across threads and processes): that
@@ -282,6 +292,12 @@ same path. It throws `IllegalArgumentException`
 without touching anything if the source is missing or not a plaintext database, or the destination
 or one of its `-journal`, `-wal` or `-shm` files already exists. The plaintext file is left as it is:
 delete it and its sidecar files once the copy is in use.
+
+A failure that Sealite sees (an exception, a failed check) removes the temporary file. A crash, a
+killed process or a power loss in the middle of a migration can leave it behind; Sealite never
+removes, reuses or publishes such a file later. To clean up, delete files matching
+`.<encrypted file name>.sealite-*` in that directory, only while no migration to that path is
+running, and never touch the destination database or its `-journal`, `-wal` and `-shm` files.
 
 Files written with SQLCipher's `cipher_plaintext_header_size` (a plaintext header on an encrypted
 file) are **not supported**: they start with the SQLite magic and Sealite reports them as
