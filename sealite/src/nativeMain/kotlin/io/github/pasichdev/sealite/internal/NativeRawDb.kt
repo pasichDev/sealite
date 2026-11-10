@@ -22,6 +22,7 @@
 
 package io.github.pasichdev.sealite.internal
 
+import androidx.sqlite.SQLiteException
 import androidx.sqlite.SQLiteStatement
 import androidx.sqlite.throwSQLiteException
 import cnames.structs.sqlite3
@@ -112,19 +113,36 @@ internal class NativeRawDb(
         // Interrupt until the lock is free, not once: sqlite3_step clears a pending interrupt when it
         // starts with no other statement running, so one that lands in the instant between another
         // thread taking the lock and starting its step would be lost, and this wait as long as that
-        // whole query.
-        while (true) {
+        // whole query. No interrupt at all when nothing is running.
+        while (!lock.tryLock()) {
             sealite_sqlite3_interrupt(dbPointer)
-            if (lock.tryLock()) break
             usleep(RETRY_MICROSECONDS)
         }
         try {
             statements.toList().forEach { it.finalizeLocked() }
             statements.clear()
-            closed = true
-            sealite_sqlite3_close_v2(dbPointer)
+            try {
+                clearPendingInterrupt()
+            } finally {
+                closed = true
+                sealite_sqlite3_close_v2(dbPointer)
+            }
         } finally {
             lock.unlock()
+        }
+    }
+
+    /**
+     * An interrupt stays pending until SQLite compiles or starts a statement with none running. Left
+     * pending, it makes `sqlite3_close_v2` give up the checkpoint of a WAL database: the rows stay in
+     * a `-wal` file that outlives the last connection. Must hold [lock], with every statement
+     * finalized.
+     */
+    private fun clearPendingInterrupt() {
+        try {
+            prepare("SELECT 1").close()
+        } catch (_: SQLiteException) {
+            // Out of memory at most: the handle is closed all the same.
         }
     }
 
@@ -144,6 +162,8 @@ internal class NativeRawDb(
 }
 
 internal actual fun rawOpen(fileName: String, flags: Int): RawDb = memScoped {
+    // The C string would end at the NUL and name a different file; the JNI binding refuses it too.
+    if ('\u0000' in fileName) throwSQLiteException(SQLITE_MISUSE, "database path must not contain NUL")
     val dbPointer = allocPointerTo<sqlite3>()
     val openResult = sealite_sqlite3_open_v2(filename = fileName, ppDb = dbPointer.ptr, flags = flags, zVfs = null)
     val db = dbPointer.value

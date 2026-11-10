@@ -13,6 +13,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** What crosses the native boundary: text, blobs, names, messages and statements that are not statements. */
@@ -164,6 +165,18 @@ class NativeBoundaryTest {
         // The connection is still fine.
         db.prepare("SELECT 1").use { s: SQLiteStatement ->
             assertTrue(s.step())
+        }
+    }
+
+    @Test
+    fun aPathWithAnEmbeddedNulIsRefusedInsteadOfOpeningTheFileNamedBeforeIt() {
+        val base = newTempDatabasePath()
+        try {
+            val e = assertFailsWith<SQLiteException> { rawOpen(base + "\u0000-tail", flags).close() }
+            assertTrue("NUL" in e.message.orEmpty(), e.message)
+            assertNull(readFileBytes(base), "the path cut at its NUL was created")
+        } finally {
+            deleteDatabaseFiles(base)
         }
     }
 }
