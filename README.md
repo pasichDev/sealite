@@ -282,13 +282,26 @@ after the commit, so the file is most likely under `newKey`, and you keep **both
 journal mode (Room sets its own) and the page size (it comes from the `SealiteConfig`). The copy is
 built in one transaction in a new temporary file next to the destination, named
 `.<encrypted file name>.sealite-<random suffix>` (for `notes.db`, `.notes.db.sealite-` followed
-by random digits or letters), checked with `PRAGMA integrity_check`, and only then moved into place
-without ever replacing anything: the destination either does not exist or is complete. On the
-JVM and Apple platforms that is a hard link; on Android API 30 and later it is
-`renameat2(RENAME_NOREPLACE)`, atomic in the kernel. On Android API 24 to 29 it is a check and a rename
-under a lock that every Sealite migration to the same path takes (across threads and processes): that
-holds against every other Sealite publish, not against unrelated code of your app that writes the
-same path. It throws `IllegalArgumentException`
+by random digits or letters, created exclusively), checked with `PRAGMA integrity_check`, and only
+then moved into place without ever replacing anything: the destination either does not exist or is
+complete. When several Sealite migrations publish to one path, exactly one wins and the others
+throw (`IllegalArgumentException` if they saw the destination first, `IllegalStateException` if they lost the
+publish itself), leaving the winner's file and the sidecar files untouched.
+
+The guarantee against a file that something else creates at the destination depends on the platform:
+
+- JVM and Apple platforms, Android API 30 and later: **atomic no-replace.** A hard link on the JVM and
+  Apple, `renameat2(RENAME_NOREPLACE)` on Android; the kernel refuses to publish over a destination
+  that exists, whoever created it and whenever, including a writer that knows nothing about Sealite.
+- Android API 24 to 29 (and a file system or kernel without `renameat2`): **serialized against Sealite
+  only.** The check that the destination is absent and the `rename` run under a lock that every
+  Sealite publish of that path takes, across threads and processes (an in-process lock and a file lock
+  on `.<name>.sealite.lock`). No two Sealite publications can replace each other. Code that creates
+  the destination without taking that lock can do so between the check and the `rename`, and its file
+  is then replaced. If your app writes to the same path from elsewhere, do not run a migration to it
+  on those API levels at the same time.
+
+It throws `IllegalArgumentException`
 without touching anything if the source is missing or not a plaintext database, or the destination
 or one of its `-journal`, `-wal` or `-shm` files already exists. The plaintext file is left as it is:
 delete it and its sidecar files once the copy is in use.
