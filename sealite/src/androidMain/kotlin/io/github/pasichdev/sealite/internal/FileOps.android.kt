@@ -65,7 +65,8 @@ private fun renamedWithoutReplacing(from: String, to: String): Boolean {
     }
 }
 
-private fun publishUnderLock(from: String, target: File) {
+/** The locked check and rename; internal so a device test can run it on every API level, not only below 30. */
+internal fun publishUnderLock(from: String, target: File) {
     val inProcess = PUBLISH_LOCKS.getOrPut(target.path) { Any() }
     synchronized(inProcess) {
         RandomAccessFile(File(target.parentFile, ".${target.name}.sealite.lock"), "rw").use { lockFile ->

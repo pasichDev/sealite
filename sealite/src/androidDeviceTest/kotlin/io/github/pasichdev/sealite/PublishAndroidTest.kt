@@ -6,6 +6,7 @@ package io.github.pasichdev.sealite
 import android.os.Build
 import android.system.Os
 import android.system.OsConstants
+import io.github.pasichdev.sealite.internal.publishUnderLock
 import io.github.pasichdev.sealite.internal.publishWithoutReplacing
 import io.github.pasichdev.sealite.internal.renameNoReplace
 import java.io.File
@@ -102,5 +103,59 @@ class PublishAndroidTest {
             assertContentEquals(byteArrayOf(winner.name.removePrefix("from").toByte()), to.readBytes())
             assertEquals(sources.size - 1, sources.count { it.exists() })
         }
+    }
+
+    // The fallback of API 24 to 29 (and of a file system without renameat2), forced on every API level.
+
+    @Test
+    fun theLockedFallbackKeepsAnExistingTargetAndItsSidecars() {
+        val dir = newDir()
+        val to = file(dir, "to", 1, 2, 3)
+        val wal = file(dir, "to-wal", 4)
+        val from = file(dir, "from", 9)
+        assertFailsWith<IllegalStateException> { publishUnderLock(from.path, File(to.path)) }
+        assertContentEquals(byteArrayOf(1, 2, 3), to.readBytes())
+        assertContentEquals(byteArrayOf(4), wal.readBytes())
+        assertContentEquals(byteArrayOf(9), from.readBytes())
+    }
+
+    @Test
+    fun theLockedFallbackLeavesExactlyOneWinnerAmongCompetingThreads() {
+        repeat(5) { round ->
+            val dir = newDir()
+            val to = File(dir, "to$round")
+            val sources = List(8) { file(dir, "from$it", it.toByte()) }
+            val start = CountDownLatch(1)
+            val pool = Executors.newFixedThreadPool(sources.size)
+            try {
+                val outcomes =
+                    sources.map { source ->
+                        pool.submit<Throwable?> {
+                            start.await()
+                            runCatching { publishUnderLock(source.path, to) }.exceptionOrNull()
+                        }
+                    }
+                start.countDown()
+                val failures = outcomes.map { it.get(30, TimeUnit.SECONDS) }
+                assertEquals(1, failures.count { it == null }, "failures: $failures")
+                assertTrue(failures.filterNotNull().all { it is IllegalStateException }, "failures: $failures")
+            } finally {
+                pool.shutdownNow()
+            }
+            val winner = sources.single { !it.exists() }
+            assertContentEquals(byteArrayOf(winner.name.removePrefix("from").toByte()), to.readBytes())
+            assertEquals(sources.size - 1, sources.count { it.exists() })
+        }
+    }
+
+    @Test
+    fun theLockedFallbackDoesNotReplaceADanglingSymlink() {
+        val dir = newDir()
+        val from = file(dir, "from", 1)
+        val to = File(dir, "to")
+        Os.symlink(File(dir, "nowhere").path, to.path)
+        assertFailsWith<IllegalStateException> { publishUnderLock(from.path, to) }
+        assertTrue(OsConstants.S_ISLNK(Os.lstat(to.path).st_mode), "the symlink must stay")
+        assertContentEquals(byteArrayOf(1), from.readBytes())
     }
 }
